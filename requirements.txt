@@ -1,0 +1,18 @@
+# Core pipeline dependencies
+opencv-python
+mediapipe
+numpy
+scipy
+moviepy
+librosa
+Pillow
+PyYAML
+tqdm
+
+# Development/test
+pytest
+
+# High-accuracy YOLO pose backend (depends on torch; install torch/torchvision first for your platform)
+# e.g. CPU: pip install torch==2.1.2 torchvision==0.16.2 --index-url https://download.pytorch.org/whl/cpu
+#      CUDA: choose a matching torch build index URL
+ultralytics
