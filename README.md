@@ -1,55 +1,87 @@
 # DanceBattle
 
-Audio-aligned dance pose comparison demo. The pipeline extracts audio, aligns two videos, runs pose estimation, scores frame-wise similarity with Procrustes analysis, and exports a side-by-side video annotated with per-frame scores.
+Audio-aligned dance pose comparison tool. The pipeline extracts audio, aligns two videos, runs pose estimation, scores frame-wise similarity with Procrustes analysis, and exports a side-by-side video annotated with per-frame scores.
+
+## Architecture
+
+The project is structured to separate **core algorithms** from **platform-specific interfaces**:
+
+```
+src/dancebattle/
+├── core/                 # Platform-independent algorithms (reusable in mobile apps)
+│   ├── audio_aligner.py  # Chroma/onset audio alignment
+│   ├── pipeline.py       # End-to-end orchestration
+│   ├── visualizer.py     # Side-by-side video renderer
+│   ├── utils.py          # PoseCacher and utilities
+│   ├── pose_estimation/  # MediaPipe + YOLO pose estimators
+│   └── similarity_analysis/  # Procrustes similarity scoring
+├── cli.py               # Command-line interface
+└── gui/                 # PC demo frontend (PySide6)
+    ├── app.py           # Main application window
+    └── workers.py       # Background threads for camera/video
+```
+
+### Using Core Algorithms in Other Platforms
+
+The `dancebattle.core` module is designed to be platform-independent:
+
+```python
+from dancebattle.core import (
+    run_pipeline,           # Full pipeline
+    MediaPipePoseEstimator, # Pose estimation
+    ProcrustesSimilarityAnalyzer,  # Similarity scoring
+    find_time_offset,       # Audio alignment
+    PoseCacher,             # Pre-compute poses for real-time comparison
+)
+
+# Example: Real-time comparison
+estimator = MediaPipePoseEstimator()
+analyzer = ProcrustesSimilarityAnalyzer()
+
+user_pose = estimator.estimate(frame)
+score = analyzer.compare(user_pose, reference_pose)
+```
 
 ## Quickstart
-1) Install ffmpeg (moviepy depends on it).  
-2) Install dependencies (YOLO backend also needs torch/torchvision for your CPU/CUDA platform):
+
+### CLI Usage
 ```bash
+# Install dependencies
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-```
-3) Run the demo with the sample assets:
-```bash
+
+# Run comparison
 python -m dancebattle.cli --video-a assets/chuu.mov --video-b assets/cyves.mov --output-dir output
 ```
-This produces `output/comparison_video.mp4` and prints the detected offset and average similarity. Defaults already point to the sample assets, so you can also run `python -m dancebattle.cli --output-dir output`.
 
-You can also run the wrapper script (adds `src/` to `PYTHONPATH` for local runs):
+### GUI Demo (PC)
 ```bash
-python main.py --video-a assets/chuu.mov --video-b assets/cyves.mov
+# Install PySide6 (included in requirements.txt)
+pip install -r requirements.txt
+
+# Launch GUI
+python main_gui.py
 ```
 
-## Project Layout
-- `src/dancebattle/` core modules  
-  - `audio_aligner.py` chroma/onset audio alignment  
-  - `pose_estimation/` MediaPipe pose estimator + YOLO11m-pose estimator  
-  - `similarity_analysis/` Procrustes similarity scoring  
-  - `visualizer.py` side-by-side video renderer with skeleton overlay  
-  - `pipeline.py` end-to-end orchestration  
-  - `cli.py` argparse CLI entrypoint  
-- `assets/` sample videos for the demo  
-- `output/`, `tests/output/` generated artifacts (gitignored)  
-- `tests/` automated unit tests and diagnostic scripts (visual/chroma/self-alignment, optional smoke tests)
-
-## Development
-- Lint/format: choose your preferred tools (e.g., black/ruff/isort) and add to pre-commit.  
-- Tests: `pytest` (after `pip install -r requirements.txt`). Smoke tests need env vars `RUN_MEDIAPIPE_TEST` / `RUN_YOLO_TEST`.  
-- Entrypoints: `python -m dancebattle.cli ...` or `python main.py ...` (adds `src/` when not installed).  
-- Version history: see `CHANGELOG.md` (target release 0.1.0).
+## GUI Features
+- **Video conference layout**: Full-screen camera view + reference video PiP
+- **3-2-1 countdown** before recording
+- **Real-time similarity scoring** during dance
+- **Audio-synced playback** of reference video
+- **Final comparison video** generation
+- **Direct video comparison** without recording
 
 ## Dependency Notes
-- Dependencies are managed in `requirements.txt`; install via `pip install -r requirements.txt`.  
-- High-accuracy YOLO pose requires torch/torchvision (pick the wheel for your CPU/CUDA platform), plus `ultralytics` (listed in requirements).
+- **ffmpeg**: Required for audio extraction and video recording with audio
+- **PySide6**: Required for GUI demo only
+- **torch/torchvision**: Required for YOLO backend only
 
 ## Models & Performance
-- Default backend: MediaPipe Pose (BlazePose, `model_complexity=1`). Compute is dominated by per-frame pose inference; audio alignment and Procrustes scoring are lightweight. Desktop CPU/GPU at 256–368px can approach real time; on mobile, lower resolution/FPS and prefer the TFLite GPU delegate.  
-- Video decode/encode cost scales with input resolution; downsample or subsample frames when needed.  
-- High-accuracy backend: YOLO11m-pose via `--pose-backend yolo --yolo-device cuda --yolo-model yolo11m-pose.pt`. Requires GPU for good speed; CPU works but is slower. Tune resolution/FPS to trade speed for quality.  
-- Poses are cached in memory only; serialize keypoints if you need reuse across runs.
+- **MediaPipe** (default): Lightweight, good for CPU
+- **YOLO11m-pose**: Higher accuracy, GPU recommended
 
 ## License
-- MIT License (see `LICENSE`).
+MIT License (see `LICENSE`).
 
 ## Acknowledgments
-- Inspired by [Mruchus/dance-sync-analysis](https://github.com/Mruchus/dance-sync-analysis).
+- Inspired by [Mruchus/dance-sync-analysis](https://github.com/Mruchus/dance-sync-analysis)

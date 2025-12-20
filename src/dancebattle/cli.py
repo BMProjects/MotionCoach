@@ -1,7 +1,7 @@
 import argparse
 from pathlib import Path
 
-from .pipeline import run_pipeline
+from .core import run_pipeline
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -87,4 +87,14 @@ def main(argv: list[str] | None = None) -> None:
 
 
 if __name__ == "__main__":
+    # Support running directly from IDE without PYTHONPATH setup
+    import sys
+    from pathlib import Path as _Path
+
+    # Add src/ to path for local development
+    _project_root = _Path(__file__).resolve().parent.parent.parent
+    _src_path = _project_root / "src"
+    if str(_src_path) not in sys.path:
+        sys.path.insert(0, str(_src_path))
+
     main()

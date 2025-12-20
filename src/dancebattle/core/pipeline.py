@@ -15,13 +15,16 @@ from .similarity_analysis.procrustes_analyzer import ProcrustesSimilarityAnalyze
 from .visualizer import create_comparison_video
 
 
-def extract_audio(video_path: Path, output_path: Path, codec: str = "pcm_s16le") -> Path:
+def extract_audio(video_path: Path, output_path: Path, codec: str = "pcm_s16le") -> Path | None:
     """
     Extracts audio from a video file and saves it as WAV.
+    Returns None if the video has no audio track.
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with VideoFileClip(str(video_path)) as clip:
-        clip.audio.write_audiofile(str(output_path), codec=codec)
+        if clip.audio is None:
+            return None
+        clip.audio.write_audiofile(str(output_path), codec=codec, logger=None)
     return output_path
 
 
@@ -71,10 +74,16 @@ def run_pipeline(
 
     audio_a_path = output_dir / f"{video_a.stem}_audio.wav"
     audio_b_path = output_dir / f"{video_b.stem}_audio.wav"
-    extract_audio(video_a, audio_a_path)
-    extract_audio(video_b, audio_b_path)
+    audio_a_result = extract_audio(video_a, audio_a_path)
+    audio_b_result = extract_audio(video_b, audio_b_path)
 
-    time_offset = find_time_offset(str(audio_a_path), str(audio_b_path), method=align_method)
+    # If both videos have audio, perform alignment; otherwise skip alignment
+    if audio_a_result is not None and audio_b_result is not None:
+        time_offset = find_time_offset(str(audio_a_path), str(audio_b_path), method=align_method)
+    else:
+        print("Warning: One or both videos have no audio track. Skipping audio alignment.")
+        time_offset = 0.0
+
     with VideoFileClip(str(video_a)) as clip_a:
         fps = clip_a.fps
 

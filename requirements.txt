@@ -8,6 +8,7 @@ librosa
 Pillow
 PyYAML
 tqdm
+PySide6
 
 # Development/test
 pytest
