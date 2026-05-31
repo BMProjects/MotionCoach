@@ -2,6 +2,8 @@
 
 Audio-aligned dance pose comparison tool. The pipeline extracts audio, aligns two videos, runs pose estimation, scores frame-wise similarity with Procrustes analysis, and exports a side-by-side video annotated with per-frame scores.
 
+![DanceBattle demo — side-by-side pose comparison with per-frame similarity score](assets/demo.webp)
+
 ## Architecture
 
 The project is structured to separate **core algorithms** from **platform-specific interfaces**:
