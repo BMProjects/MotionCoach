@@ -20,9 +20,10 @@ Platform-independent algorithms that can be integrated into any application:
 - **GUI** (`dancebattle.gui`): PySide6-based PC demo
 
 ## Installation
+
+> Legacy module, restored on the MediaPipe Tasks API (same output format and scoring as before). New work lives in `motioncoach` (see [ARCHITECTURE.md](ARCHITECTURE.md)).
 ```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+uv sync --extra dance --extra gui   # legacy dance demo (CLI + PySide6 GUI)
 ```
 
 For YOLO backend, install matching torch/torchvision for your CPU/CUDA platform.

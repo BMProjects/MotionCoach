@@ -2,8 +2,6 @@ from typing import Optional
 
 import cv2
 import numpy as np
-from ultralytics import YOLO
-
 from .base_estimator import BasePoseEstimator
 
 
@@ -15,6 +13,8 @@ class YOLOPoseEstimator(BasePoseEstimator):
     """
 
     def __init__(self, model_path: str = "yolo11m-pose.pt", device: str = "cuda", conf: float = 0.25):
+        from ultralytics import YOLO   # optional dependency: only needed for the YOLO backend
+
         self.model = YOLO(model_path)
         self.device = device
         self.conf = conf

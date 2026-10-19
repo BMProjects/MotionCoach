@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>动作对比分析</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='3' r='2' fill='%232a78d6'/%3E%3Cpath d='M8 5v5M4 7h8M8 10l-3 5M8 10l3 5' stroke='%232a78d6' stroke-width='1.6' fill='none'/%3E%3C/svg%3E">
+</head>
+<body>
+<header class="topbar">
+  <a href="#/" class="brand">动作对比分析 <span class="tag">MVP · 八段锦</span></a>
+  <nav><a href="#/" data-nav="new">新建分析</a><a href="#/bench" data-nav="bench" class="dev-only hidden">算法对比（开发者）</a></nav>
+  <span class="topnote">研究测试工具 · 结果仅供算法验证</span>
+</header>
+
+<main id="app">
+  <!-- ===================== new analysis ===================== -->
+  <section id="view-new" class="view">
+    <div class="grid2">
+      <div class="card">
+        <h2><span class="step">1</span>标准动作</h2>
+        <div id="ref-list" class="ref-list"></div>
+        <h2 class="mt"><span class="step">2</span>练习者视频</h2>
+        <label class="drop" id="drop">
+          <input type="file" id="file" accept="video/*">
+          <span id="drop-text">点击选择或拖入视频文件</span>
+        </label>
+        <details class="dev">
+          <summary>或使用 assets/ 中已有视频（开发测试）</summary>
+          <div id="local-list" class="local-list"></div>
+        </details>
+      </div>
+      <div class="card">
+        <h2><span class="step">3</span>分析区间</h2>
+        <div class="choice" id="scope-opts">
+          <label><input type="radio" name="scope" value="auto" checked>
+            <b>自动（推荐）</b><small>找出两段视频共有、连续、且画面质量合格的最长一段，只分析这一段</small></label>
+          <label><input type="radio" name="scope" value="segments">
+            <b>指定动作段</b><small>从 <select id="seg-from"></select> 到 <select id="seg-to"></select></small></label>
+          <label><input type="radio" name="scope" value="manual">
+            <b>手动</b><small>上面选定的动作段，对应练习者视频的 <input id="u-start" type="number" min="0" step="0.5" placeholder="起"> – <input id="u-end" type="number" min="0" step="0.5" placeholder="止"> 秒</small></label>
+        </div>
+        <h2 class="mt"><span class="step">4</span>录制方式</h2>
+        <div class="choice compact">
+          <label><input type="radio" name="mirror" value="auto" checked> 不确定（自动判断）</label>
+          <label><input type="radio" name="mirror" value="yes"> 保存的视频是镜像的（自拍时举左手，画面中在左边）</label>
+          <label><input type="radio" name="mirror" value="no"> 保存的视频不是镜像（后置摄像头 / 他人拍摄）</label>
+        </div>
+        <label class="check"><input type="checkbox" id="mirror-practice"> 练习者是对着示范“照镜子”做的（左右相反）</label>
+        <details class="dev dev-only hidden">
+          <summary>开发者：姿态算法与采样</summary>
+          <label>姿态算法 <select id="backend"></select></label>
+          <p class="msg" id="backend-note"></p>
+          <label>分析帧率 <select id="fps"><option>5</option><option selected>10</option><option>15</option></select> fps</label>
+        </details>
+        <p class="msg">姿态识别：MediaPipe Pose Landmarker（默认，优先 GPU）。</p>
+        <button id="start" class="primary" disabled>开始分析</button>
+        <p id="start-msg" class="msg"></p>
+      </div>
+    </div>
+    <div class="grid2">
+      <div class="card tips">
+        <h2>拍摄要点</h2>
+        <ul>
+          <li>与示范<strong>同一视角</strong>（本示范为正面），手机固定、竖屏。</li>
+          <li><strong>全身入画</strong>，头顶与脚下留空；人物约占画高一半以上。</li>
+          <li>光线均匀；宽松衣物会降低关节定位精度。画面中只有练习者一人。</li>
+          <li>两手攀足等前屈动作在正面视角下不可测，需侧面补拍（后续版本）。</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h2>最近的分析</h2>
+        <div id="job-list" class="job-list"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== progress ===================== -->
+  <section id="view-progress" class="view hidden">
+    <div class="card narrow">
+      <h2>分析中…</h2>
+      <div class="bar"><div id="bar-fill"></div></div>
+      <ol id="stages" class="stages"></ol>
+      <p class="msg" id="progress-msg">只有选中的区间做逐帧分析；姿态结果会缓存，换区间或重复分析会很快。</p>
+    </div>
+  </section>
+
+  <!-- ===================== report: one workbench ===================== -->
+  <section id="view-report" class="view hidden">
+    <!-- 0 · header: what was analysed, with caveats always visible -->
+    <div class="r-head">
+      <div class="r-title">
+        <h1 id="r-title">分析报告</h1>
+        <p id="r-scope" class="sub"></p>
+      </div>
+      <div id="r-badges" class="badges"></div>
+    </div>
+    <div id="r-notes" class="notes hidden"></div>
+
+    <!-- 1 · what to look at first -->
+    <div class="findings-row">
+      <div id="findings" class="findings"></div>
+      <div id="r-summary" class="r-summary"></div>
+    </div>
+
+    <!-- 2 · timeline (reference time is the master axis) -->
+    <section class="tl-panel" id="tl-panel" aria-label="时间轴">
+      <div class="tl-toolbar">
+        <button id="play" class="primary" title="播放 / 暂停（空格）">▶ 播放</button>
+        <button id="step-back" title="后退 0.5 秒（←）">⟨</button>
+        <button id="step-fwd" title="前进 0.5 秒（→）">⟩</button>
+        <label>速度 <select id="rate"><option>0.25</option><option>0.5</option><option selected>1</option></select></label>
+        <label>播放跟随 <select id="master"><option value="ref" selected>标准示范</option><option value="user">练习者</option></select></label>
+        <span class="tl-sep"></span>
+        <span class="zoom-group">缩放
+          <button id="z-all" title="显示全部分析区间">全部</button>
+          <button id="z-seg" title="只看当前动作段（或双击动作段）">当前段</button>
+          <button id="z-in" title="放大（Ctrl + 滚轮）">＋</button>
+          <button id="z-out" title="缩小">－</button>
+        </span>
+        <span id="clock" class="clock"></span>
+      </div>
+      <div class="tl-wrap"><canvas id="tl" class="tl"></canvas><div id="tl-tip" class="tip hidden"></div></div>
+      <p class="tl-help">拖动时间轴或点击任意位置定位，下方画面、曲线、骨架同步更新。点击动作段选中，双击放大；点击 ①②③ 跳到重点差异。滚轮 + Ctrl 缩放，滚轮 + Shift 平移。</p>
+    </section>
+
+    <!-- 3 · layers driven by the playhead -->
+    <section class="layer" id="layer-view">
+      <header class="layer-head"><button class="layer-toggle" aria-expanded="true">▾</button><h2>画面层</h2>
+        <span class="layer-sub" id="view-sub"></span>
+        <span class="layer-tools">
+          <label class="check"><input type="checkbox" id="ly-skel" checked> 骨架</label>
+          <label class="check"><input type="checkbox" id="ly-joint" checked> 当前指标的关节与角度</label>
+          <label class="check"><input type="checkbox" id="ly-arrow" checked> 偏差箭头</label>
+        </span>
+      </header>
+      <div class="layer-body viewer">
+        <figure class="pane"><figcaption>练习者 <span id="cap-user" class="cap-time"></span></figcaption>
+          <div class="vbox"><video id="v-user" playsinline preload="auto"></video><canvas id="c-user"></canvas><div class="outside hidden" id="out-user">此时段未分析</div></div></figure>
+        <figure class="pane"><figcaption>标准示范 <span id="cap-ref" class="cap-time"></span></figcaption>
+          <div class="vbox"><video id="v-ref" playsinline preload="auto" muted></video><canvas id="c-ref"></canvas><div class="outside hidden" id="out-ref">此时段未分析</div></div></figure>
+        <figure class="pane"><figcaption>同体型骨架对照
+            <span class="seg-toggle" id="norm-mode"><button data-m="now" class="on">当前时刻</button><button data-m="seg">本段定势平均</button></span></figcaption>
+          <div class="vbox light"><canvas id="norm"></canvas><div class="outside hidden" id="out-norm">此时段未分析</div></div>
+          <p class="pane-note" id="norm-note"></p></figure>
+      </div>
+    </section>
+
+    <section class="layer" id="layer-curve">
+      <header class="layer-head"><button class="layer-toggle" aria-expanded="true">▾</button><h2>曲线层</h2>
+        <span class="layer-sub">灰线 = 标准；蓝线 = 练习者（按动作对应时刻对齐）；浅色带 = 允许偏差；斜纹 = 此视角不可测</span></header>
+      <div class="layer-body">
+        <div id="feat-chips" class="chips"></div>
+        <div class="curve-wrap"><canvas id="curve" class="curve"></canvas><div id="curve-tip" class="tip hidden"></div></div>
+      </div>
+    </section>
+
+    <section class="layer" id="layer-focus">
+      <header class="layer-head"><button class="layer-toggle" aria-expanded="true">▾</button><h2>当前关注</h2>
+        <span class="layer-sub" id="focus-sub"></span></header>
+      <div class="layer-body focus-grid">
+        <div class="focus-main">
+          <div id="focus-status" class="focus-status"></div>
+          <p id="focus-text" class="focus-text"></p>
+          <dl id="focus-values" class="focus-values"></dl>
+          <p id="focus-def" class="hint"></p>
+        </div>
+        <div class="focus-more">
+          <details><summary>当前时刻的全部指标</summary><div class="tbl-wrap"><table id="now" class="now"></table></div></details>
+          <details><summary>动作段 × 指标矩阵</summary><div class="legend" id="legend"></div><div class="heat-wrap"><table id="heat" class="heat"></table></div></details>
+          <details><summary>反复出现的差异模式</summary><p class="hint" id="pat-meta"></p><div id="pat-cards" class="pat-cards"></div></details>
+          <details><summary>为什么分析这一段</summary><p class="hint" id="scope-reason"></p><div class="tbl-wrap"><table class="scope-table" id="scope-table"></table></div></details>
+          <details><summary>指标说明</summary><dl id="glossary" class="glossary"></dl></details>
+          <details><summary>导出与技术信息</summary><p><a id="csv" class="button" href="#">导出对齐后的采样数据（CSV）</a></p>
+            <p class="hint">CSV 为按标准时间采样（10 fps）、经清洗并按动作对应关系聚合后的数据，不是原视频每帧的原始测量。</p><pre id="tech"></pre></details>
+        </div>
+      </div>
+    </section>
+  </section>
+
+  <!-- ===================== bench (developer) ===================== -->
+  <section id="view-bench" class="view hidden">
+    <div class="card">
+      <h2>姿态识别算法对比（开发者）</h2>
+      <p class="hint">算法对比由开发者负责，终端用户只运行默认的 MediaPipe。运行：<code>uv run motioncoach bench --reference … --user … --backends a,b,c</code></p>
+      <div id="bench-list" class="job-list"></div>
+    </div>
+    <div id="bench-body"></div>
+  </section>
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>

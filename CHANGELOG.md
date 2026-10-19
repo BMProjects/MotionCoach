@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.0 (2026-10-19) — renamed to MotionCoach
+
+- New `motioncoach` package: motion-comparison engine (pose-sequence contract, 14 interpretable 2D
+  indicators, two-stage DTW alignment, per-joint evidence with validity gating, body-normalised
+  skeletons, deviation clustering) with application profiles; Baduanjin is the first application.
+- Shared-interval analysis: coarse 2 fps location + per-section quality checks; segment or manual scopes.
+- Pose backend registry: MediaPipe Tasks (default, GPU first), RTMPose/RTMO/RTMW/RTMW3D via rtmlib +
+  onnxruntime-gpu, Ultralytics YOLO11/YOLO26; GVHMR and SAM 3D Body catalogued as 3D candidates.
+  Developer benchmark on identical frames.
+- FastAPI job service and a timeline workbench web client.
+- Legacy DanceBattle demo ported to the MediaPipe Tasks API (output and scoring unchanged).
+- Packaging moved to `pyproject.toml` + `uv`; `requirements.txt` removed.
+
 ## 0.2.0 (2025-12-20)
 
 ### 新增功能
