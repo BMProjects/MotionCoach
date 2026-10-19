@@ -10,7 +10,10 @@ from pathlib import Path
 
 import pytest
 
-from dancebattle.pipeline import run_pipeline
+pytest.importorskip("librosa")
+pytest.importorskip("moviepy")
+
+from dancebattle import run_pipeline  # noqa: E402
 
 RUN_YOLO_TEST = os.getenv("RUN_YOLO_TEST") == "1"
 

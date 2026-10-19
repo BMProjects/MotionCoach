@@ -1,0 +1,45 @@
+[project]
+name = "motioncoach"
+version = "0.3.0"
+description = "Reference-vs-practitioner motion comparison: per-joint evidence, two-stage alignment and a timeline workbench (Baduanjin first; legacy dance demo included)"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "numba>=0.60",
+    "mediapipe>=0.10.20",
+    "pyyaml>=6.0",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "python-multipart>=0.0.9",
+]
+
+[project.optional-dependencies]
+# Legacy dance demo (src/dancebattle)
+dance = ["librosa>=0.10", "moviepy>=2.0", "tqdm", "Pillow"]
+gui = ["PySide6>=6.6"]
+# Optional pose backends for algorithm comparison (motioncoach.perception)
+rtm = ["rtmlib>=0.0.15", "onnxruntime-gpu>=1.27"]   # RTMPose / RTMW / RTMO, Apache-2.0; GPU build (CUDA 13, cuDNN 9) also runs on CPU
+yolo = ["ultralytics>=8.4"]                      # YOLO11/YOLO26-pose, AGPL-3.0 (commercial use needs a licence)
+
+[project.scripts]
+motioncoach = "motioncoach.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dancebattle", "src/motioncoach"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]   # legacy dance smoke tests are opt-in (RUN_MEDIAPIPE_TEST=1, needs --extra dance)
+
+[tool.uv]
+# rtmlib pins the CPU-only "onnxruntime" wheel; it would overwrite onnxruntime-gpu (same module name).
+override-dependencies = ["onnxruntime; sys_platform == 'never'"]

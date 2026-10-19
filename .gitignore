@@ -22,3 +22,12 @@ dist/
 .DS_Store
 .vscode/
 .idea/
+
+# motioncoach runtime data (pose cache, normalised videos, jobs, uploads) and model weights
+data/
+models/
+
+# Third-party / private sample videos are never published (identifiable people, unclear licence)
+assets/Weixin*
+assets/*.mp4
+!assets/demo*.mp4

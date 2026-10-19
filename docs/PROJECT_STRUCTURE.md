@@ -1,3 +1,5 @@
+> 本文描述的是旧版 DanceBattle 舞蹈演示（`src/dancebattle`）。当前 MotionCoach 的整体架构见 [ARCHITECTURE.md](ARCHITECTURE.md)。
+
 # DanceBattle 项目结构
 
 ## 目录结构
@@ -7,7 +9,7 @@ DanceBattle/
 ├── README.md                 # 项目说明
 ├── CHANGELOG.md              # 版本历史
 ├── LICENSE                   # MIT 许可证
-├── requirements.txt          # Python 依赖
+├── pyproject.toml / uv.lock   # 依赖（uv 管理）
 │
 ├── main.py                   # CLI 入口 (python main.py)
 ├── main_gui.py               # GUI 入口 (python main_gui.py)

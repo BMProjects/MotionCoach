@@ -1,0 +1,53 @@
+# 健身气功·八段锦 评价规则（应用层）
+# status: draft —— 关注关节、容差与“不可测”标记均为工程草案，需教练确认后才能作为教学结论。
+id: baduanjin
+title: 健身气功·八段锦
+status: draft
+view: front            # 规则假定正面拍摄；侧面拍摄需要另一套“可测/不可测”标记
+
+features: [l_elbow, r_elbow, l_shoulder, r_shoulder, l_hip, r_hip, l_knee, r_knee,
+           l_wrist_height, r_wrist_height, trunk_lean, head_turn, stance_width, pelvis_height]
+
+# 容差：|差值| <= good 为达标，<= warn 为需注意，超出为偏差明显。
+# 单目 2D 估计本身有数度误差，good 不应低于测量噪声。
+tolerances:
+  deg: {good: 15, warn: 30}
+  ratio: {good: 0.15, warn: 0.30}     # 以躯干长为单位
+overrides:
+  trunk_lean: {good: 8, warn: 15}
+  head_turn: {good: 0.12, warn: 0.25} # 以肩宽为单位
+
+status_statistic: hold   # hold = 定势（低速）时刻的中位绝对差；all = 整段中位绝对差
+min_coverage: 0.6        # 有效覆盖率低于此值 -> 不可评价，而不是 0 分
+focus_weight: 1.0
+other_weight: 0.4
+
+segments:
+  prep: {name: 预备势, focus: [stance_width, l_knee, r_knee]}
+  s1:   {name: 第一式 两手托天理三焦, focus: [l_shoulder, r_shoulder, l_elbow, r_elbow, l_wrist_height, r_wrist_height]}
+  s2:   {name: 第二式 左右开弓似射雕, focus: [l_knee, r_knee, stance_width, pelvis_height, l_elbow, r_elbow, l_shoulder, r_shoulder, head_turn]}
+  s3:   {name: 第三式 调理脾胃须单举, focus: [l_shoulder, r_shoulder, l_elbow, r_elbow, l_wrist_height, r_wrist_height]}
+  s4:   {name: 第四式 五劳七伤往后瞧, focus: [head_turn, l_shoulder, r_shoulder, l_elbow, r_elbow]}
+  s5:   {name: 第五式 摇头摆尾去心火, focus: [l_knee, r_knee, stance_width, pelvis_height, trunk_lean, head_turn]}
+  s6:
+    name: 第六式 两手攀足固肾腰
+    focus: [l_knee, r_knee, l_shoulder, r_shoulder]
+    not_applicable: [l_hip, r_hip, trunk_lean, pelvis_height, l_wrist_height, r_wrist_height]
+    reason: 正面视角下前屈深度与髋角严重透视缩短，需侧面拍摄
+  s7:   {name: 第七式 攒拳怒目增气力, focus: [l_knee, r_knee, stance_width, pelvis_height, l_elbow, r_elbow, l_shoulder, r_shoulder]}
+  s8:   {name: 第八式 背后七颠百病消, focus: [l_knee, r_knee, trunk_lean], note: 提踵高度与颠足节律当前未测量}
+  end:  {name: 收势, focus: []}
+
+quality:
+  min_detection_rate: 0.9
+  min_person_height_frac: 0.35
+  min_feet_visible: 0.6
+  min_short_side: 480
+  max_edge_rate: 0.2
+  lr_swap_ratio: 0.95      # 左右交换后（段内精对齐）代价低于原来的 95% -> 判定左右相反
+  max_align_cost: 1.2      # 段内平均对齐代价（容差单位）高于此值 -> 对齐可信度低
+  max_coarse_align_cost: 1.6   # 区间选择用的粗对齐（2 fps、轻量模型）阈值，粗对齐代价天然偏高
+
+alignment:
+  coarse_window_s: 1.0     # 粗对齐（镜像不变特征）的平滑窗口
+  skip_cost: 2.0           # 用户视频首尾“无关片段”的单帧代价（容差单位）；过低会丢弃重复次数不同的整段

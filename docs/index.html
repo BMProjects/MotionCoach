@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MotionCoach — joint-by-joint motion comparison</title>
+<meta name="description" content="MotionCoach compares a practitioner's video with a reference performance: shared-interval selection, two-stage alignment, per-joint evidence and a timeline workbench.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='3' r='2' fill='%232a78d6'/%3E%3Cpath d='M8 5v5M4 7h8M8 10l-3 5M8 10l3 5' stroke='%232a78d6' stroke-width='1.6' fill='none'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #f9f9f7; --card: #ffffff; --ink: #0b0b0b; --ink2: #52514e; --muted: #898781; --line: #e1e0d9;
+    --accent: #2a78d6; --accent-bg: #eaf2fc; --good: #0ca30c; --warn: #fab219; --bad: #d03b3b; --arrow: #eb6834;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f0f0e; --card: #1a1a19; --ink: #f0efec; --ink2: #c3c2b7; --muted: #898781; --line: #2c2c2a;
+      --accent: #3987e5; --accent-bg: #16263b; color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f0f0e; --card: #1a1a19; --ink: #f0efec; --ink2: #c3c2b7; --muted: #898781; --line: #2c2c2a;
+    --accent: #3987e5; --accent-bg: #16263b; color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  a { color: var(--accent); }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 20px; }
+  header.top { border-bottom: 1px solid var(--line); background: var(--card); }
+  header.top .wrap { display: flex; align-items: center; gap: 16px; height: 56px; }
+  .logo { font-weight: 800; font-size: 18px; color: var(--ink); text-decoration: none; display: flex; gap: 8px; align-items: center; }
+  header.top nav { margin-left: auto; display: flex; gap: 18px; font-size: 14px; }
+  header.top nav a { color: var(--ink2); text-decoration: none; }
+  @media (max-width: 700px) { header.top nav a:not(:last-child) { display: none; } }
+  .hero { padding: 56px 0 28px; }
+  .hero h1 { font-size: clamp(30px, 5vw, 46px); line-height: 1.15; margin: 0 0 14px; letter-spacing: -0.02em; }
+  .hero p.lead { font-size: 19px; color: var(--ink2); max-width: 760px; margin: 0 0 24px; }
+  .cta { display: flex; gap: 12px; flex-wrap: wrap; }
+  .btn { display: inline-block; padding: 10px 18px; border-radius: 8px; font-weight: 600; text-decoration: none; border: 1px solid var(--line); color: var(--ink); background: var(--card); }
+  .btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  figure.demo { margin: 28px 0 8px; }
+  figure.demo img { width: 100%; height: auto; border-radius: 12px; border: 1px solid var(--line); box-shadow: 0 10px 30px rgba(0,0,0,.08); display: block; }
+  figure.demo figcaption { font-size: 13px; color: var(--muted); margin-top: 8px; }
+  section { padding: 40px 0; border-top: 1px solid var(--line); }
+  h2 { font-size: 26px; margin: 0 0 8px; letter-spacing: -0.01em; }
+  .sub { color: var(--ink2); margin: 0 0 24px; max-width: 760px; }
+  .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+  @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 18px; }
+  .card h3 { margin: 0 0 6px; font-size: 17px; }
+  .card p { margin: 0; color: var(--ink2); font-size: 15px; }
+  .tag { display: inline-block; font-size: 12px; font-weight: 700; color: var(--accent); background: var(--accent-bg); border-radius: 999px; padding: 2px 10px; margin-bottom: 8px; }
+  ol.steps { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; counter-reset: s; }
+  @media (max-width: 860px) { ol.steps { grid-template-columns: 1fr; } }
+  ol.steps li { counter-increment: s; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; position: relative; }
+  ol.steps li::before { content: counter(s); display: inline-grid; place-items: center; width: 26px; height: 26px; border-radius: 50%; background: var(--ink); color: var(--card); font-weight: 700; font-size: 13px; margin-bottom: 8px; }
+  ol.steps b { display: block; margin-bottom: 4px; }
+  ol.steps span { color: var(--ink2); font-size: 14px; }
+  .shot { width: 100%; border-radius: 12px; border: 1px solid var(--line); display: block; }
+  .two { display: grid; grid-template-columns: 1.1fr 1fr; gap: 24px; align-items: start; }
+  @media (max-width: 860px) { .two { grid-template-columns: 1fr; } }
+  ul.ticks { padding-left: 0; list-style: none; margin: 0; }
+  ul.ticks li { padding-left: 26px; position: relative; margin: 10px 0; color: var(--ink2); }
+  ul.ticks li b { color: var(--ink); }
+  ul.ticks li::before { content: ""; position: absolute; left: 0; top: 7px; width: 14px; height: 14px; border-radius: 4px; background: var(--accent); }
+  .tbl { width: 100%; border-collapse: collapse; font-size: 14px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  .tbl th, .tbl td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  .tbl th { color: var(--ink2); font-weight: 600; background: var(--bg); }
+  .tbl-wrap { overflow-x: auto; }
+  .note { background: var(--card); border: 1px solid var(--warn); border-left-width: 4px; border-radius: 10px; padding: 14px 16px; color: var(--ink2); }
+  .thanks { columns: 2; column-gap: 32px; padding-left: 18px; color: var(--ink2); }
+  @media (max-width: 700px) { .thanks { columns: 1; } }
+  .thanks li { margin: 6px 0; break-inside: avoid; }
+  pre { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px; overflow-x: auto; font-size: 13.5px; }
+  footer { border-top: 1px solid var(--line); padding: 26px 0 40px; color: var(--muted); font-size: 14px; }
+</style>
+</head>
+<body>
+<header class="top"><div class="wrap">
+  <a class="logo" href="#"><svg width="20" height="20" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="3" r="2" fill="#2a78d6"/><path d="M8 5v5M4 7h8M8 10l-3 5M8 10l3 5" stroke="#2a78d6" stroke-width="1.6" fill="none"/></svg>MotionCoach</a>
+  <nav><a href="#features">Features</a><a href="#how">How it works</a><a href="#backends">Backends</a><a href="#thanks">Acknowledgements</a><a href="https://github.com/BMProjects/MotionCoach">GitHub</a></nav>
+</div></header>
+
+<main class="wrap">
+  <div class="hero">
+    <h1>Joint-by-joint comparison of human movement against a reference.</h1>
+    <p class="lead">MotionCoach aligns a practitioner's video with a reference performance by movement phase, not by clock time. It measures interpretable joint indicators and shows exactly where, when and how strongly the two differ, together with how much evidence supports each result.</p>
+    <div class="cta"><a class="btn primary" href="https://github.com/BMProjects/MotionCoach">View on GitHub</a><a class="btn" href="#quickstart">Quickstart</a></div>
+    <figure class="demo">
+      <img src="media/motioncoach-demo.webp" alt="Animated demo of the MotionCoach timeline workbench: reference and practitioner timelines with correspondence bands, status strips, synced videos with skeleton overlays, and a body-normalised skeleton comparison" width="960" height="827">
+      <figcaption>Recorded on the real workbench. Video pixels are blurred deliberately; skeletons and analysis layers are as rendered. The UI is currently in Chinese.</figcaption>
+    </figure>
+  </div>
+
+  <section id="features">
+    <h2>What it does</h2>
+    <p class="sub">The first application is Baduanjin (八段锦), a traditional Chinese qigong routine. The engine itself knows nothing about any particular discipline: each application supplies a rules profile and an annotated reference.</p>
+    <div class="grid">
+      <div class="card"><span class="tag">Scope</span><h3>Analyses what both videos share</h3><p>A fast coarse pass locates every section in the practitioner video and checks detection, foot visibility, camera cuts and correspondence quality. Full-rate analysis runs only on the longest stretch that passes.</p></div>
+      <div class="card"><span class="tag">Alignment</span><h3>Matches movement phases</h3><p>Two-stage DTW, mirror-invariant then per section, copes with practitioners who are 2–3× slower or repeat moves more often. Timing and shape differences are reported separately.</p></div>
+      <div class="card"><span class="tag">Evidence</span><h3>Per-joint differences with status</h3><p>Fourteen named 2D indicators: joint angles, wrist height, trunk lean, head turn, stance width and hip height. Where evidence is thin the result is <em>not evaluable</em> or <em>uncertain</em>, never a silent pass.</p></div>
+      <div class="card"><span class="tag">Workbench</span><h3>A timeline you can drag</h3><p>The reference timeline sits on top and the practitioner timeline below, joined by correspondence bands. Status strips and issue markers sit on the same axis, and the playhead drives videos, skeletons and curves together.</p></div>
+      <div class="card"><span class="tag">Visual</span><h3>Body-normalised skeletons</h3><p>Both bodies are scaled to one standard figure, keeping each bone's own 2D direction. This reduces the effect of body size and camera distance, and difference vectors point from the reference to the practitioner.</p></div>
+      <div class="card"><span class="tag">Research</span><h3>Swappable, comparable algorithms</h3><p>End users run MediaPipe, GPU first. Developers benchmark RTMPose, RTMW, RTMW3D and YOLO on identical frames, with speed, stability and P95 measurement differences.</p></div>
+    </div>
+  </section>
+
+  <section id="how">
+    <h2>How it works</h2>
+    <p class="sub">Each stage writes structured evidence. Rules turn evidence into statuses; the client only displays them and never recomputes them.</p>
+    <ol class="steps">
+      <li><b>Normalise</b><span>Both videos become H.264 proxies with rotation applied and timestamps preserved.</span></li>
+      <li><b>Locate</b><span>A 2 fps coarse alignment checks every section and picks the shared, continuous interval.</span></li>
+      <li><b>Estimate poses</b><span>Pose estimation runs on the interval only, on an absolute <i>k/fps</i> sampling grid, GPU first.</span></li>
+      <li><b>Align &amp; compare</b><span>Coarse then per-section DTW; signed differences at key moments, with coverage and timing.</span></li>
+      <li><b>Evaluate &amp; show</b><span>Profile tolerances and view limits produce statuses, which open in the timeline workbench.</span></li>
+    </ol>
+  </section>
+
+  <section>
+    <div class="two">
+      <img class="shot" src="media/workbench.webp" alt="Static screenshot of the MotionCoach report workbench" width="1280" height="1102" loading="lazy">
+      <div>
+        <h2>Built for checking, not just viewing</h2>
+        <ul class="ticks">
+          <li><b>Denominators everywhere.</b> “31/35 evaluable focus indicators within tolerance”, with the not-evaluable count listed alongside.</li>
+          <li><b>Status that respects the camera.</b> Movements a frontal view cannot measure are hatched, not coloured green.</li>
+          <li><b>Mirror-aware.</b> Selfie recordings and mirror-side practice are independent transforms; together they cancel.</li>
+          <li><b>Reproducible inputs.</b> Content-addressed caches keyed by video, model, device class and sampling grid.</li>
+          <li><b>Exportable.</b> Aligned per-moment data as CSV, with technical metadata in every report.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section id="backends">
+    <h2>Pose backends</h2>
+    <p class="sub">MediaPipe is the default. The others are for developer-side comparison. 3D methods from our survey are catalogued with their requirements.</p>
+    <div class="tbl-wrap"><table class="tbl">
+      <tr><th>Backend</th><th>Output</th><th>Role</th><th>GPU path</th><th>Licence</th></tr>
+      <tr><td>MediaPipe Pose Landmarker</td><td>33 points + hip-centred 3D</td><td><b>Default</b></td><td>GPU delegate (EGL)</td><td>Apache-2.0</td></tr>
+      <tr><td>RTMPose / RTMO</td><td>COCO-17</td><td>Comparison</td><td>ONNX Runtime CUDA</td><td>Apache-2.0</td></tr>
+      <tr><td>RTMW</td><td>133 whole-body points</td><td>Comparison</td><td>ONNX Runtime CUDA</td><td>Apache-2.0</td></tr>
+      <tr><td>RTMW3D</td><td>133 points + 3D (not metric)</td><td>3D experiments</td><td>ONNX Runtime CUDA</td><td>Apache-2.0</td></tr>
+      <tr><td>YOLO11 / YOLO26 pose</td><td>COCO-17</td><td>Comparison</td><td>PyTorch CUDA</td><td>AGPL-3.0</td></tr>
+      <tr><td>GVHMR</td><td>World-grounded SMPL motion</td><td>3D candidate</td><td>PyTorch CUDA</td><td>Research; SMPL needs registration</td></tr>
+      <tr><td>SAM 3D Body</td><td>Single-image body mesh</td><td>3D candidate</td><td>PyTorch CUDA</td><td>SAM Licence; gated weights</td></tr>
+    </table></div>
+  </section>
+
+  <section id="quickstart">
+    <h2>Quickstart</h2>
+    <pre><code>git clone https://github.com/BMProjects/MotionCoach.git &amp;&amp; cd MotionCoach
+uv sync                                    # Python 3.12, FFmpeg required
+uv run motioncoach serve                   # http://127.0.0.1:8765
+uv run motioncoach analyze --reference baduanjin_demo_a --user practice.mp4 --mirrored yes
+
+uv sync --extra rtm --extra yolo           # developer backends (ONNX Runtime GPU, Ultralytics)
+uv run motioncoach bench --reference baduanjin_demo_a --user practice.mp4 --backends mediapipe-full,rtmw-l</code></pre>
+    <p class="note"><b>Research prototype.</b> The Baduanjin section boundaries, tolerances and focus joints are drafts that a coach has not yet confirmed. Indicators are 2D and assume a frontal camera. No agreement study against expert ratings or motion capture has been done yet. Sample videos are not distributed.</p>
+  </section>
+
+  <section id="thanks">
+    <h2>Acknowledgements</h2>
+    <ul class="thanks">
+      <li><a href="https://github.com/Mruchus/dance-sync-analysis">Mruchus/dance-sync-analysis</a>, which inspired the original DanceBattle demo.</li>
+      <li><a href="https://github.com/google-ai-edge/mediapipe">Google MediaPipe</a>: Pose Landmarker and the Tasks API.</li>
+      <li><a href="https://github.com/open-mmlab/mmpose">OpenMMLab MMPose</a>: RTMPose, RTMO, RTMW, RTMW3D.</li>
+      <li><a href="https://github.com/Tau-J/rtmlib">rtmlib</a>: lightweight ONNX deployment of RTM models.</li>
+      <li><a href="https://github.com/ultralytics/ultralytics">Ultralytics</a>: YOLO11 and YOLO26 pose.</li>
+      <li><a href="https://github.com/zju3dv/GVHMR">GVHMR</a> (ZJU3DV) and <a href="https://github.com/facebookresearch/sam-3d-body">SAM 3D Body</a> (Meta).</li>
+      <li><a href="https://onnxruntime.ai/">ONNX Runtime</a>, <a href="https://pytorch.org/">PyTorch</a>, <a href="https://numpy.org/">NumPy</a>, <a href="https://scipy.org/">SciPy</a>, <a href="https://numba.pydata.org/">Numba</a>.</li>
+      <li><a href="https://opencv.org/">OpenCV</a>, <a href="https://ffmpeg.org/">FFmpeg</a>, <a href="https://fastapi.tiangolo.com/">FastAPI</a>, <a href="https://www.uvicorn.org/">Uvicorn</a>.</li>
+      <li><a href="https://librosa.org/">librosa</a>, <a href="https://zulko.github.io/moviepy/">MoviePy</a>, <a href="https://doc.qt.io/qtforpython-6/">PySide6</a>, used by the legacy demo.</li>
+      <li><a href="https://playwright.dev/">Playwright</a>, for real-browser verification.</li>
+    </ul>
+  </section>
+</main>
+<footer><div class="wrap">MotionCoach · MIT Licence for the source code; models keep their own licences · formerly “DanceBattle”</div></footer>
+</body>
+</html>
