@@ -19,13 +19,18 @@ Project page: <https://bmprojects.github.io/MotionCoach/>
 
 ## What it does
 
-- **Analyses only what both videos share.** A fast 2 fps pass locates every section of the
-  routine in the practitioner video and checks it: is the person detected, are the feet visible,
+- **Analyses only what both videos share.** One full-length pose pass per video (cached, so any
+  later interval is a slice) is subsampled to 2 fps to locate every section of the routine in the
+  practitioner video and check it: is the person detected, are the feet visible,
   is there a cut or zoom in the reference, is the correspondence reliable? Fine analysis runs only on
   the longest continuous stretch that passes. You can also pick sections or give a manual time range.
-- **Matches moments, not frames.** Two-stage alignment (mirror-invariant coarse DTW, then
-  fixed-end DTW within each section) handles a practitioner who is 2–3× slower or repeats a move more
-  often. Differences in shape and differences in timing are reported separately.
+- **Matches repetitions, not frames.** A mirror-invariant coarse DTW finds each section; inside it,
+  every reference repetition (annotated once per reference video) is searched in the practitioner's
+  section with a slope-constrained subsequence DTW, so six practice repetitions each map onto the one
+  demonstration without any frame absorbing a stretch of the other video. Playback follows the
+  practitioner and replays the matching demonstration for every repetition. Differences in shape and
+  in timing are reported separately. The method was chosen by a side-by-side study against the
+  earlier approaches (`docs/ALIGNMENT_STUDY.md`).
 - **Reports evidence, not a magic score.** It measures 14 interpretable 2D indicators (joint angles,
   wrist height, trunk lean, head turn, stance width, hip height) and gives signed differences at
   key moments, coverage, and a status for each one. When there is too little valid data the status is
@@ -36,7 +41,9 @@ Project page: <https://bmprojects.github.io/MotionCoach/>
   time, issue markers flag the largest differences, and dragging the playhead drives synced video with
   joint and angle overlays, a body-normalised skeleton with difference vectors, and indicator curves
   on the same time axis.
-- **Keeps algorithms swappable.** End users run MediaPipe Pose Landmarker (GPU first). Developers can
+- **Keeps algorithms swappable.** End users run one deployment-chosen model: MediaPipe Pose Landmarker
+  (GPU first) by default, RTMW-l on the GPU analysis server (`MOTIONCOACH_BACKEND`, the accuracy/speed balance), with section bounds
+  optionally taken from another model (`MOTIONCOACH_BOUNDS_BACKEND`). Developers can
   benchmark RTMPose / RTMO / RTMW / RTMW3D (rtmlib, ONNX Runtime CUDA) and YOLO11 / YOLO26 on
   *identical frames*. The benchmark reports speed, stability, and model-to-model measurement differences
   (median / P95 / share of frames beyond tolerance).
@@ -48,10 +55,10 @@ flowchart LR
     A[Reference video] --> N[Normalise<br/>H.264 proxy, rotation, timestamps]
     B[Practitioner video] --> N
     N --> L[Locate shared sections<br/>2 fps coarse pass + quality checks]
-    L --> P[Pose estimation on the chosen interval<br/>MediaPipe Tasks, GPU first]
-    P --> F[Features<br/>14 named 2D indicators]
-    F --> D[Two-stage DTW<br/>coarse mirror-invariant → per-section fine]
-    D --> C[Per-section, per-joint differences<br/>key moments, coverage, timing]
+    L --> P[Pose estimation, full length, cached<br/>MediaPipe Tasks, GPU first]
+    P --> F[Clean + features<br/>One Euro filter, 14 named 2D indicators]
+    F --> D[Sections: coarse DTW<br/>Repetitions: reference-template search]
+    D --> C[Per-repetition, per-joint differences<br/>key-moment intervals, coverage, timing]
     C --> R[Profile rules<br/>tolerances, focus joints, view limits]
     R --> W[Report + timeline workbench]
 ```
@@ -99,6 +106,8 @@ uv sync --extra rtm --extra yolo          # rtmlib + onnxruntime-gpu (CUDA 13), 
 uv run motioncoach backends               # registry: availability, 2D/3D, GPU conditions, candidates
 uv run motioncoach bench --reference baduanjin_demo_a --user practice.mp4 \
     --scope segments --from s3 --to s4 --backends mediapipe-full,rtmw-l,rtmw3d-x,yolo26m-pose
+uv run motioncoach group --reference baduanjin_demo_a --video class.mp4   # several people (needs --extra rtm):
+    # identities, performer screening, one report per performer, sync/consistency (docs/MULTI_PERSON_DESIGN.md)
 MOTIONCOACH_DEV=1 uv run motioncoach serve    # exposes backend choice and the benchmark page
 MOTIONCOACH_DEVICE=cpu uv run motioncoach ... # force CPU for reproducibility checks
 ```
@@ -107,18 +116,21 @@ MOTIONCOACH_DEVICE=cpu uv run motioncoach ... # force CPU for reproducibility ch
 
 | Backend | Output | Role | GPU path | Licence |
 |---|---|---|---|---|
-| MediaPipe Pose Landmarker (lite / full / heavy) | 33 points + hip-centred 3D estimate | **Default** (full); lite for the coarse pass | GPU delegate via EGL; Google documents Ubuntu only, so the adapter selects the NVIDIA EGL vendor and falls back to CPU | Apache-2.0 |
+| MediaPipe Pose Landmarker (lite / full / heavy) | 33 points + hip-centred 3D estimate | **Default** when unset (full); full for section bounds on the GPU server; lite for the person check | GPU delegate via EGL; Google documents Ubuntu only, so the adapter selects the NVIDIA EGL vendor and falls back to CPU | Apache-2.0 |
 | RTMPose-m/x, RTMO-m | COCO-17 | Developer comparison | onnxruntime-gpu CUDA EP | Apache-2.0 |
-| RTMW-l/x | COCO-WholeBody 133 (feet, hands) | Developer comparison | onnxruntime-gpu CUDA EP | Apache-2.0 |
+| RTMW-l/x | COCO-WholeBody 133 (feet, hands) | RTMW-l: GPU-server default; others developer comparison | onnxruntime-gpu CUDA EP | Apache-2.0 |
 | RTMW3D-x | 133 points + 3D (crop pixels + relative depth, not metric) | Developer comparison, 3D experiments | onnxruntime-gpu CUDA EP | Apache-2.0 |
 | YOLO11m / YOLO26n/m-pose | COCO-17 | Developer comparison | PyTorch CUDA | AGPL-3.0 (commercial use needs a licence) |
 | GVHMR | World-grounded SMPL motion (video level) | *Catalogued 3D candidate* | PyTorch CUDA | Research use; SMPL/SMPL-X need registration |
 | SAM 3D Body | Single-image full-body mesh (MHR) | *Catalogued 3D candidate* | PyTorch CUDA | SAM License; gated weights |
 
-Sample timings on an RTX 3050 Laptop GPU (10 fps sampling, identical frames): MediaPipe full 8–9 ms/frame,
-YOLO26m about 35 ms, RTMW-l 46 ms, RTMPose-m 74 ms, RTMW3D-x 152 ms. See `docs/ARCHITECTURE.md` §13
-for model-to-model measurement differences. One example: hip-height values from MediaPipe and COCO-17
-models differ systematically, so the reference and the practitioner must be measured with the same backend.
+A full benchmark of all twelve runnable backends on an RTX 4090 D, scored by what matters for the analysis
+(repetition detection and key-moment correspondence against a hand annotation, keypoint noise during held
+poses, occlusion in forward bends, hands/feet coverage, throughput and memory), is in
+[`docs/POSE_BENCH.md`](docs/POSE_BENCH.md). In short: RTMW (whole-body) gives the best analysis results
+and the only hand and foot keypoints; MediaPipe full is about 3× faster than RTMW-l and needs a fraction of
+the memory. The reference and the practitioner must be measured with the same backend — conclusions shift
+by up to a quarter of the indicator verdicts between models.
 
 ## Status and limitations
 
@@ -128,13 +140,19 @@ MotionCoach is a research prototype, **not** a validated coaching or assessment 
   has not yet confirmed.
 - Indicators are 2D and assume a frontal camera. Some movements (deep forward bends, turns) cannot be
   measured from the front and are marked as such. 3D outputs are stored but not yet scored.
-- Key moments are chosen heuristically (low motion, far from a neutral stance). There is no
-  per-repetition comparison yet.
+- Repetitions and key moments of the reference are annotated by hand (draft, ±1 s, not yet confirmed
+  by a coach); the method was validated on a single practitioner video only.
 - Left/right cannot be inferred automatically for routines that alternate sides, so the user states how
   the video was recorded.
 - No agreement study against expert ratings or motion capture has been done.
+- Large, fast movements (deep bends with a swaying trunk) remain the weakest point of the 2D pose models;
+  the experiment plan (cleaning ablation, failure diagnosis, a hard-pose validation set, a few candidate
+  models) is in [`docs/EXPERIMENT_PLAN.md`](docs/EXPERIMENT_PLAN.md).
+- Lengths are shown in body proportions; centimetres appear only when the practitioner states their height.
 
-Design notes, sample-video findings and the roadmap are in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (Chinese).
+An index of all documents is in [`docs/README.md`](docs/README.md). Design notes, sample-video findings and the roadmap are in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md); the
+reproducible iteration history (what was tried, measured and decided, with data fingerprints and commands)
+is in [`docs/ITERATION_LOG.md`](docs/ITERATION_LOG.md) (both in Chinese).
 
 ## Legacy: DanceBattle
 

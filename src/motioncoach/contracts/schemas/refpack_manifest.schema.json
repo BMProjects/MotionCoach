@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "motioncoach.refpack/1",
+  "title": "Reference package manifest",
+  "description": "What a client needs to compare a practitioner with one reference video without the server: rules, annotated repetition templates, and the reference's features / normalised skeleton measured with a named pose model (the practitioner must use the same model).",
+  "type": "object",
+  "required": ["schema", "reference_id", "version", "created", "engine_version", "profile", "model", "sample_fps", "files"],
+  "properties": {
+    "schema": {"const": "motioncoach.refpack/1"},
+    "reference_id": {"type": "string"},
+    "title": {"type": "string"},
+    "version": {"type": "string", "description": "content hash of the reference asset + profile + model"},
+    "created": {"type": "string"},
+    "engine_version": {"type": "string"},
+    "profile": {"type": "string"},
+    "status": {"type": "string", "description": "draft until confirmed by a coach"},
+    "model": {"type": "string", "description": "pose model id the features were measured with"},
+    "sample_fps": {"type": "number"},
+    "frames": {"type": "integer"},
+    "features": {"type": "array", "items": {"type": "string"}},
+    "joints": {"type": "array", "items": {"type": "string"}, "description": "joint order of skeleton.f16"},
+    "segments": {"type": "array", "items": {"type": "object", "required": ["id", "start", "end", "reps"], "properties": {
+      "id": {"type": "string"}, "name": {"type": "string"}, "start": {"type": "number"}, "end": {"type": "number"},
+      "reps": {"type": ["array", "null"], "items": {"type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4},
+               "description": "[start, end, hold_start, hold_end] seconds; [] = not a repeated move; null = not annotated (detect templates)"}}}},
+    "files": {"type": "object", "additionalProperties": {"type": "object", "required": ["path", "sha256", "bytes"], "properties": {
+      "path": {"type": "string"}, "sha256": {"type": "string"}, "bytes": {"type": "integer"},
+      "dtype": {"type": "string"}, "shape": {"type": "array", "items": {"type": "integer"}}}}}
+  }
+}

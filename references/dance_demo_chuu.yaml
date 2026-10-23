@@ -1,0 +1,18 @@
+# 舞蹈对照参考：旧 DanceBattle 示例视频（仓库自带 assets/chuu.mov），与 assets/cyves.mov 比较。
+# status: draft —— 片段按约 2.9 秒等分，没有动作语义标注；仅用于在数据量小时对照八段锦的结果。
+id: dance_demo_chuu
+title: 舞蹈示例 chuu（竖屏，约 17 秒）
+profile: dance
+video: assets/chuu.mov
+mirrored_video: false
+demonstration_side: unknown
+view: front
+status: draft
+notes: 旧版音频对齐测得 cyves 比 chuu 晚开始约 4.55 秒，可作为时间对齐的外部参照。
+segments:
+  - {id: p1, start: 0.0,  end: 2.9}
+  - {id: p2, start: 2.9,  end: 5.8}
+  - {id: p3, start: 5.8,  end: 8.6}
+  - {id: p4, start: 8.6,  end: 11.5}
+  - {id: p5, start: 11.5, end: 14.4}
+  - {id: p6, start: 14.4, end: 17.2}

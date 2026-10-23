@@ -1,5 +1,6 @@
 # 参考动作资产（示例）：assets 中的专业示范视频
-# status: draft —— 分段边界由人工看片粗标（约 ±5 s），尚未经教练确认；示范是否为镜面示范未知。
+# status: draft —— 分段与每次重复（起止、定势区间）由 Claude 逐秒看片标注（约 ±1 s，2026-10-20），尚未经教练确认；示范是否为镜面示范未知。
+#   标准模板 = 每式的 reps；练习者的每次重复都与之匹配（engine/templates.py）。
 id: baduanjin_demo_a
 title: 八段锦 示范 A（男，正面，约 5 分钟）
 profile: baduanjin
@@ -9,14 +10,14 @@ demonstration_side: unknown   # anatomical | mirror_teaching | unknown
 view: front
 status: draft
 notes: 未检测到硬切换（ffmpeg 场景分数 ≤0.02），直立帧人体尺度变化 ≤1.3×；约 23% 的时间身体触及画面边缘。
-segments:
-  - {id: prep, start: 0,   end: 28}
-  - {id: s1,   start: 28,  end: 55}
-  - {id: s2,   start: 55,  end: 82}
-  - {id: s3,   start: 82,  end: 117}
-  - {id: s4,   start: 117, end: 147}
-  - {id: s5,   start: 147, end: 188}
-  - {id: s6,   start: 188, end: 217}
-  - {id: s7,   start: 217, end: 253}
-  - {id: s8,   start: 253, end: 277}
-  - {id: end,  start: 277, end: 296}
+segments:   # reps: [[起, 止, 定势起, 定势止], ...] 秒；[] = 非重复动作（整段对应）
+  - {id: prep, start: 0, end: 30, reps: []}
+  - {id: s1, start: 30, end: 53, reps: [[30, 45, 34, 40]]}
+  - {id: s2, start: 53, end: 84, reps: [[54, 68, 60, 66], [68, 83, 75, 81]]}
+  - {id: s3, start: 84, end: 120, reps: [[94, 104, 97, 100], [106, 117, 109, 113]]}
+  - {id: s4, start: 120, end: 150, reps: [[123, 134, 126, 130.5], [134, 144, 136.5, 141]]}
+  - {id: s5, start: 150, end: 190, reps: [[158, 167, 160, 163], [171, 182, 174, 177]]}
+  - {id: s6, start: 190, end: 227, reps: [[196, 220, 208, 215]]}
+  - {id: s7, start: 227, end: 257, reps: [[237.5, 245, 239.5, 242.5], [245.5, 253, 247.5, 250.5]]}
+  - {id: s8, start: 257, end: 278, reps: []}
+  - {id: end, start: 278, end: 295.8, reps: []}

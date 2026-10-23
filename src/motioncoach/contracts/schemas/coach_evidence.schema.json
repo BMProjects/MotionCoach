@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "motioncoach.coach.evidence/0",
+  "title": "Coaching evidence (input to the LLM, built deterministically from a report)",
+  "description": "Interface only (docs/LLM_COACH_DESIGN.md). Every item carries 'ref', a JSON pointer into the report, so advice can be checked against it.",
+  "type": "object",
+  "required": ["schema", "report_id", "routine", "items", "cannot_judge"],
+  "properties": {
+    "schema": {"const": "motioncoach.coach.evidence/0"},
+    "report_id": {"type": "string"},
+    "routine": {"type": "string"},
+    "units": {"type": "object", "description": "scale used for cm wording (report.scale)"},
+    "timing": {"type": "object", "properties": {"tempo_ratio": {"type": "number"}, "repetitions": {"type": "array"}}},
+    "items": {"type": "array", "items": {"type": "object",
+      "required": ["ref", "segment", "feature", "status", "typical_deviation", "unit", "direction", "consistency"],
+      "properties": {
+        "ref": {"type": "string"}, "segment": {"type": "string"}, "feature": {"type": "string"},
+        "status": {"enum": ["good", "warn", "bad"]},
+        "typical_deviation": {"type": "number"}, "unit": {"enum": ["deg", "cm", "torso", "shoulder"]},
+        "direction": {"type": "string", "description": "wording of the correction direction, e.g. 更伸直"},
+        "consistency": {"enum": ["every_repetition", "most_repetitions", "alternating"]},
+        "focus": {"type": "boolean"}}}},
+    "cannot_judge": {"type": "array", "items": {"type": "object", "required": ["ref", "reason"], "properties": {
+      "ref": {"type": "string"}, "reason": {"type": "string"}}}},
+    "knowledge": {"type": "array", "items": {"type": "object", "required": ["id", "text", "source"], "properties": {
+      "id": {"type": "string"}, "text": {"type": "string"}, "source": {"type": "string"}}}}
+  }
+}

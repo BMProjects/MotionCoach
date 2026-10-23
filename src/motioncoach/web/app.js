@@ -24,25 +24,29 @@ const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
 const JOINT_CN = { nose: "头", left_shoulder: "左肩", right_shoulder: "右肩", left_elbow: "左肘", right_elbow: "右肘",
   left_wrist: "左腕", right_wrist: "右腕", left_hip: "左髋", right_hip: "右髋", left_knee: "左膝", right_knee: "右膝",
   left_ankle: "左踝", right_ankle: "右踝" };
-const STAGES = [["ingest", "视频规范化（旋转、编码）"], ["locate", "定位共同动作区间（2 fps 粗扫）"], ["poses_ref", "标准视频姿态（区间内）"],
+const STAGES = [["check", "检查画面中是否有人"], ["ingest", "视频规范化（旋转、编码）"], ["locate", "全片姿态识别 + 定位共同动作区间"], ["poses_ref", "标准视频姿态（区间内）"],
   ["poses_user", "练习者视频姿态（区间内）"], ["features", "关节特征"], ["align", "动作时间对应 + 左右判断"], ["compare", "逐关节比较、骨架归一化、差异聚类"]];
-const SERIES = ["--s1", "--s2", "--s3", "--s4", "--s5", "--s6"];
-const STATUS_VAR = { good: "--good", warn: "--warn", bad: "--bad", unmeasurable: "--unm", missing: "--unm", na: "--na", uncertain: "--unc", out: "--track" };
-const STATUS_GLYPH = { good: "✓", warn: "!", bad: "!!", unmeasurable: "?", na: "—", uncertain: "≈", missing: "?" };
+const SERIES = ["--p1", "--p2", "--p3", "--p4", "--p5", "--p6"];   // pattern hues avoid the identity pair and status colours
+const STATUS_VAR = { good: "--good", warn: "--warn", bad: "--bad", unmeasurable: "--unm", missing: "--unm", na: "--na", uncertain: "--unc", imprecise: "--imp", out: "--track" };
+const STATUS_GLYPH = { good: "✓", warn: "!", bad: "!!", unmeasurable: "?", na: "—", uncertain: "≈", imprecise: "±", missing: "?" };
 const confidence = (c) => (c < 0.7 ? "高" : c < 1.2 ? "中" : "低");
-const CFG = { dev_mode: false, default_backend: "mediapipe-full" };
+const CFG = { dev_mode: false, default_backend: "mediapipe-full", default_backend_label: "", default_height_cm: 163.9 };
 
 // ------------------------------------------------------------------ routing
 function show(id) {
+  // leaving a page stops its playback: returning to the group overview or the record list starts paused
+  $$(".view").forEach((v) => { if (v.id !== id) v.querySelectorAll("video").forEach((x) => x.pause()); });
   $$(".view").forEach((v) => v.classList.toggle("hidden", v.id !== id));
-  $$(".topbar nav a").forEach((a) => a.classList.toggle("on",
-    (id === "view-bench" && a.dataset.nav === "bench") || (id !== "view-bench" && a.dataset.nav === "new")));
+  const nav = { "view-bench": "bench", "view-jobs": "jobs", "view-report": "jobs", "view-group": "jobs" }[id] || "new";
+  $$(".topbar nav a").forEach((a) => a.classList.toggle("on", a.dataset.nav === nav));
 }
 async function route() {
   const h = location.hash;
   let m;
-  if ((m = h.match(/^#\/job\/([0-9a-z_]{6,40})(?:@([0-9.]+))?$/))) { R.deepT = m[2] ? +m[2] : null; return openJob(m[1]); }
+  if ((m = h.match(/^#\/job\/([0-9a-z_]{6,40})(?:\/p\/(\d+))?(?:@([0-9.]+))?$/))) { R.deepT = m[3] ? +m[3] : null; return openJob(m[1], m[2] === undefined ? null : +m[2]); }
+  if ((m = h.match(/^#\/group\/([0-9a-z_]{6,40})(\/ids)?$/))) return openGroup(m[1], m[2] ? "ids" : "people");
   if ((m = h.match(/^#\/bench(?:\/([A-Za-z0-9_.-]+))?$/))) return openBench(m[1]);
+  if (h === "#/jobs") return openJobs();
   show("view-new");
   initNew();
 }
@@ -71,6 +75,9 @@ async function initNew() {
     if (i === 0) form.ref = r.id;
   });
   fillSegSelects();
+  $("#backend-default").textContent = `姿态识别：${CFG.default_backend_label || CFG.default_backend}（服务器默认`
+    + (CFG.bounds_backend ? `；动作段边界用 ${CFG.bounds_backend}` : "") + "）。"
+    + "长度按身体比例显示；填写本人身高后另显示估算的厘米值。";
   if (CFG.dev_mode) {
     const backends = await api("/api/backends");
     const bs = $("#backend");
@@ -94,74 +101,326 @@ async function initNew() {
   $("#start").onclick = start;
   check();
 }
-function check() { $("#start").disabled = !(form.ref && (form.upload || form.local)); }
-async function doUpload(file) {
-  $("#drop-text").textContent = `上传中：${file.name} …`;
-  const fd = new FormData(); fd.append("file", file);
-  try {
-    const r = await api("/api/uploads", { method: "POST", body: fd });
-    form.upload = r.upload_id; form.local = null;
-    $("#drop-text").textContent = `已上传：${file.name}（${r.size_mb} MB）`;
-    $("#drop").classList.add("has");
-  } catch (e) { $("#drop-text").textContent = "上传失败：" + e.message; }
-  check();
+function check() { $("#start").disabled = !(form.ref && (form.upload || form.local || form.uploading)); }
+function uploadFile(file, onProgress) {   // XHR (not fetch) for upload progress
+  return new Promise((resolve, reject) => {
+    const x = new XMLHttpRequest();
+    x.open("POST", "/api/uploads");
+    x.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(e.loaded / e.total, e.loaded, e.total); };
+    x.onload = () => {
+      let d = {}; try { d = JSON.parse(x.responseText); } catch { /* non-JSON error page */ }
+      if (x.status >= 200 && x.status < 300) resolve(d); else reject(new Error(d.detail || `${x.status} ${x.statusText}`));
+    };
+    x.onerror = () => reject(new Error("网络中断"));
+    const fd = new FormData(); fd.append("file", file); x.send(fd);
+  });
+}
+// rough live speed: bytes over the last ~5 s; "stalled" when nothing moved for 10 s
+const fmtMB = (b) => (b >= 1e9 ? `${(b / 1e9).toFixed(2)} GB` : `${(b / 1e6).toFixed(b >= 1e8 ? 0 : 1)} MB`);
+function uploadStatus(t) {
+  const now = Date.now(), pct = `${Math.round(t.frac * 100)}%`;
+  if (!t.samples || t.samples.length < 2) return `${pct} · 正在建立连接…`;
+  const last = t.samples[t.samples.length - 1];
+  if (now - last.t > 10000) return `${pct} · 已 ${Math.round((now - last.t) / 1000)} 秒没有进度：网络可能中断，或页面被锁屏 / 切到后台挂起`;
+  const first = t.samples.find((x) => now - x.t <= 5000) || t.samples[0];
+  const speed = (last.b - first.b) / Math.max(0.5, (last.t - first.t) / 1000);   // bytes / s
+  const left = speed > 0 ? (t.total - last.b) / speed : Infinity;
+  const eta = !isFinite(left) ? "" : left < 60 ? ` · 约 ${Math.max(1, Math.round(left))} 秒` : ` · 约 ${Math.round(left / 60)} 分钟`;
+  const slow = speed < 0.3e6 ? " · 网络较慢" : "";
+  return `${pct}（${fmtMB(last.b)} / ${fmtMB(t.total)}）· ${(speed / 1e6).toFixed(speed < 1e6 ? 2 : 1)} MB/s${eta}${slow}`;
+}
+// non-blocking advice from the file's own metadata (docs/VIDEO_SPEC.md §2.1); the upload goes ahead regardless
+function adviseFile(file) {
+  const hint = $("#file-hint"); hint.textContent = ""; hint.classList.add("hidden");
+  const v = document.createElement("video"), url = URL.createObjectURL(file);
+  v.preload = "metadata"; v.muted = true;
+  v.onloadedmetadata = () => {
+    const short = Math.min(v.videoWidth, v.videoHeight), dur = v.duration, mbps = isFinite(dur) && dur > 0 ? file.size * 8 / dur / 1e6 : 0;
+    const tips = [];
+    if (short > 1100) tips.push(`分辨率 ${v.videoWidth}×${v.videoHeight}：系统只用到 1080p，4K 体积约为 1080p 的 4 倍`);
+    if (mbps > 30) tips.push(`码率约 ${Math.round(mbps)} Mb/s（多为 4K 或 60 fps）`);
+    if (tips.length) {
+      hint.textContent = `提示：${tips.join("；")}。下次建议用 1080p 30 fps 拍摄，上传更快、结果不变。本次照常上传。`;
+      hint.classList.remove("hidden");
+    }
+    URL.revokeObjectURL(url);
+  };
+  v.onerror = () => URL.revokeObjectURL(url);
+  v.src = url;
+}
+function doUpload(file) {
+  adviseFile(file);
+  const task = { key: "u" + Date.now(), name: file.name, frac: 0, state: "uploading", total: file.size, samples: [] };
+  TASKS.uploads.set(task.key, task);
+  form.upload = null; form.local = null;
+  $("#drop").classList.add("has");
+  const show = () => {
+    if (form.uploading === p) $("#drop-text").textContent = `上传中：${file.name} · ${uploadStatus(task)}`;
+    renderTasks();
+  };
+  const p = uploadFile(file, (f, loaded) => {
+    task.frac = f;
+    task.samples.push({ t: Date.now(), b: loaded });
+    if (task.samples.length > 200) task.samples.splice(0, 100);
+    show();
+  });
+  const tick = setInterval(show, 1000);   // keeps the stall notice honest when no progress events arrive
+  form.uploading = p; form.uploadTask = task;
+  show();
+  p.finally(() => clearInterval(tick));
+  p.then((r) => {
+    task.state = "uploaded"; task.frac = 1;
+    if (form.uploading === p) { form.upload = r.upload_id; form.uploading = null; $("#drop-text").textContent = `已上传：${file.name}（${r.size_mb} MB）`; }
+  }, (e) => {
+    task.state = "error"; task.error = "上传失败：" + e.message;
+    if (form.uploading === p) { form.uploading = null; $("#drop-text").textContent = task.error; $("#drop").classList.remove("has"); }
+  }).finally(() => { check(); renderTasks(); });
+  renderTasks(); check();
+}
+function resetForm() {
+  Object.assign(form, { upload: null, local: null, uploading: null, uploadTask: null });
+  $("#file").value = ""; $("#drop").classList.remove("has"); $("#drop-text").textContent = "点击选择或拖入视频文件";
+  $$("#local-list button").forEach((x) => x.classList.remove("sel")); $("#start-msg").textContent = ""; check();
 }
 async function start() {
   $("#start").disabled = true;
   const scope = document.querySelector('input[name="scope"]:checked').value;
   const body = {
-    reference_id: form.ref, user: form.upload ? { upload_id: form.upload } : { local: form.local },
+    reference_id: form.ref, user: form.upload || form.uploading ? { upload_id: form.upload, filename: form.uploadTask && form.uploadTask.name } : { local: form.local },
     user_mirrored: document.querySelector('input[name="mirror"]:checked').value, mirror_practice: $("#mirror-practice").checked,
     sample_fps: +$("#fps").value, backend: CFG.dev_mode ? $("#backend").value : CFG.default_backend,
     scope_mode: scope, seg_from: scope === "auto" ? null : $("#seg-from").value, seg_to: scope === "auto" ? null : $("#seg-to").value,
+    mode: document.querySelector('input[name="people"]:checked').value,
+    height_cm: +$("#height-cm").value || null,
     user_start: scope === "manual" ? +$("#u-start").value : null, user_end: scope === "manual" ? +$("#u-end").value : null,
   };
+  // the job runs in the background: go to the history page, which shows its progress next to earlier results
+  const uploading = form.uploading, task = form.uploadTask;
+  if (uploading) { task.state = "pending"; task.thenAnalyse = true; }
+  resetForm();
+  location.hash = "#/jobs";
   try {
+    if (uploading) body.user.upload_id = (await uploading).upload_id;
     const job = await api("/api/jobs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    location.hash = `#/job/${job.id}`;
-  } catch (e) { $("#start-msg").textContent = "无法开始：" + e.message; check(); }
+    if (task) TASKS.uploads.delete(task.key);
+    TASKS.jobs.set(job.id, job);
+  } catch (e) {
+    if (task) { task.state = "error"; task.error = task.error || "无法开始分析：" + e.message; }
+    else TASKS.uploads.set("e" + Date.now(), { name: "新分析", state: "error", error: "无法开始分析：" + e.message });
+  }
+  refreshTasks();
 }
-async function loadJobs() {
-  const jobs = await api("/api/jobs").catch(() => []);
+window.addEventListener("beforeunload", (e) => {   // closing the page would abort an upload
+  if ([...TASKS.uploads.values()].some((t) => t.state === "uploading" || t.state === "pending")) { e.preventDefault(); e.returnValue = ""; }
+});
+async function loadJobs(list) {
+  const jobs = list || await api("/api/jobs").catch(() => []);
   const box = $("#job-list");
   box.replaceChildren();
   if (!jobs.length) box.append(el("p", { class: "msg" }, "暂无"));
-  for (const j of jobs.slice(0, 12)) {
-    const d = new Date(j.created * 1000);
-    box.append(el("a", { href: `#/job/${j.id}` }, el("span", {}, (j.user_filename || "").slice(0, 36)),
-      el("span", { class: "st" }, `${{ done: "完成", error: "失败", running: "进行中", queued: "排队" }[j.status] || j.status} · ${d.toLocaleString()}`)));
+  for (const j of jobs.slice(0, 6)) {
+    const d = new Date(j.created * 1000), sm = j.summary;
+    const active = j.status === "running" || j.status === "queued";
+    box.append(el("a", { href: active ? "#/jobs" : jobHref(j) }, el("span", {}, (j.user_filename || "").slice(0, 30) + (sm ? ` · ${sm.segments}` : "")),
+      el("span", { class: "st" }, `${active ? jobProgressText(j) : JOB_STATUS[j.status] || j.status} · ${d.toLocaleString()}`)));
   }
 }
+const JOB_STATUS = { done: "完成", error: "失败", running: "进行中", queued: "排队", rejected: "无法分析" };
+const jobStage = (j) => (j.status === "queued" ? "排队等待" : (STAGES.find(([k]) => k === j.stage) || [, "准备中"])[1]);
+const jobProgressText = (j) => `${jobStage(j)} · ${Math.round((j.progress || 0) * 100)}%`;
 
-// ------------------------------------------------------------------ progress
-let pollTimer = null;
-async function openJob(id) {
-  clearTimeout(pollTimer);
+// ------------------------------------------------------------------ background tasks: uploads + analyses, visible on every page
+const TASKS = { uploads: new Map(), jobs: new Map(), timer: null, open: false };
+async function refreshTasks() {
+  clearTimeout(TASKS.timer);
+  const jobs = await api("/api/jobs").catch(() => null);
+  if (jobs) {
+    for (const j of jobs) {
+      const known = TASKS.jobs.get(j.id);
+      if (j.status === "queued" || j.status === "running" || known) TASKS.jobs.set(j.id, { ...j, dismissed: known && known.dismissed });
+    }
+    if (!$("#view-jobs").classList.contains("hidden")) { jobsCache = jobs; renderJobs(); }
+    if (!$("#view-new").classList.contains("hidden")) loadJobs(jobs);
+  }
+  renderTasks();
+  const busy = [...TASKS.jobs.values()].some((j) => j.status === "queued" || j.status === "running")
+    || [...TASKS.uploads.values()].some((t) => t.state === "uploading" || t.state === "pending");
+  if (busy) TASKS.timer = setTimeout(refreshTasks, 1500);
+}
+function renderTasks() {
+  const ups = [...TASKS.uploads.values()], jobs = [...TASKS.jobs.values()].filter((j) => !j.dismissed);
+  const active = ups.filter((t) => t.state !== "error" && t.state !== "uploaded").length + jobs.filter((j) => j.status === "queued" || j.status === "running").length;
+  const done = jobs.filter((j) => j.status === "done").length, failed = jobs.filter((j) => j.status === "error" || j.status === "rejected").length + ups.filter((t) => t.state === "error").length;
+  const chip = $("#tasks-chip"), panel = $("#tasks-panel");
+  chip.classList.toggle("hidden", !(ups.length || jobs.length));
+  chip.classList.toggle("busy", active > 0);
+  chip.textContent = active ? `⟳ 分析中 ${active} 项` : failed ? `! ${failed} 项未完成分析` : `✓ ${done} 项分析完成`;
+  panel.classList.toggle("hidden", !TASKS.open || !(ups.length || jobs.length));
+  const item = (name, sub, frac, state, actions) => el("div", { class: `task ${state}` },
+    el("div", { class: "task-name", title: name }, name), el("div", { class: "task-sub" }, sub),
+    frac !== null ? el("div", { class: "bar thin" }, el("div", { style: `width:${Math.round(frac * 100)}%` })) : null,
+    actions ? el("div", { class: "task-act" }, ...actions) : null);
+  const rows = [];
+  for (const t of ups) {
+    const sub = t.state === "error" ? t.error : t.state === "uploaded" ? "已上传，等待点击“开始分析”"
+      : `上传中 ${uploadStatus(t)}${t.thenAnalyse ? "，完成后自动开始分析" : ""}`;
+    rows.push(item(t.name, sub, t.state === "uploading" || t.state === "pending" ? t.frac : null, t.state,
+      t.state === "error" || t.state === "uploaded" ? [el("button", { onclick: () => { TASKS.uploads.delete(t.key); renderTasks(); } }, "关闭")] : null));
+  }
+  for (const j of jobs) {
+    const act = j.status === "queued" || j.status === "running";
+    rows.push(item(j.user_filename || j.id, act ? jobProgressText(j) : j.status === "done" ? "分析完成"
+      : j.status === "rejected" ? "无法分析：" + (j.reason || "") : "分析失败：" + (j.error || ""), act ? j.progress || 0 : null, j.status,
+      act ? null : [j.status === "done" ? el("a", { class: "button", href: jobHref(j) }, "打开报告") : null,
+        el("button", { onclick: () => { TASKS.jobs.set(j.id, { ...j, dismissed: true }); renderTasks(); } }, "关闭")]));
+  }
+  panel.replaceChildren(el("div", { class: "task-head" }, "后台任务", el("a", { href: "#/jobs" }, "分析记录 →")), ...rows);
+}
+
+// ------------------------------------------------------------------ history
+let jobsCache = [];
+async function openJobs() {
+  show("view-jobs");
+  jobsCache = await api("/api/jobs").catch(() => []);
+  const q = $("#jobs-q");
+  q.oninput = renderJobs;
+  renderJobs();
+  refreshTasks();
+}
+function renderJobs() {
+  const q = $("#jobs-q").value.trim().toLowerCase(), box = $("#jobs-table");
+  const rows = jobsCache.filter((j) => !q || JSON.stringify([j.user_filename, j.summary]).toLowerCase().includes(q));
+  box.replaceChildren();
+  if (!rows.length) { box.append(el("p", { class: "msg" }, jobsCache.length ? "没有匹配的记录。" : "还没有分析记录。")); return; }
+  const t = el("table", { class: "jobs" }, el("tr", {}, ...["时间", "练习者视频", "分析区间", "结果", "状态", ""].map((h) => el("th", {}, h))));
+  const del = async (e, j) => {
+    e.stopPropagation();
+    if (!confirm(`删除这条分析记录？\n${j.user_filename || j.id} · ${new Date(j.created * 1000).toLocaleString()}\n报告与姿态数据将被删除，不可恢复。`)) return;
+    try { await api(`/api/jobs/${j.id}`, { method: "DELETE" }); } catch (err) { alert("删除失败：" + err.message); return; }
+    jobsCache = jobsCache.filter((x) => x.id !== j.id); TASKS.jobs.delete(j.id); renderJobs(); renderTasks();
+  };
+  for (const j of rows) {
+    const d = new Date(j.created * 1000), sm = j.summary || {}, old = sm.schema && !/0\.[345]$/.test(String(sm.schema));
+    const open = () => { location.hash = jobHref(j); };
+    const active = j.status === "running" || j.status === "queued";
+    t.append(el("tr", { class: j.status === "done" ? "ok" : active ? "active" : "", tabindex: j.status === "done" ? "0" : null,
+      onclick: j.status === "done" ? open : null,
+      onkeydown: (e) => { if (e.key === "Enter") open(); } },
+      el("td", { class: "nowrap" }, d.toLocaleString()),
+      el("td", {}, el("b", {}, j.user_filename || "—"), isGroup(j) ? el("span", { class: "pill group" }, "多人") : null, el("div", { class: "hint" }, sm.reference || "")),
+      el("td", {}, sm.segments || "—", sm.ref_range ? el("div", { class: "hint" }, `标准 ${sm.ref_range[0].toFixed(0)}–${sm.ref_range[1].toFixed(0)} s ↔ 练习者 ${sm.user_range[0].toFixed(0)}–${sm.user_range[1].toFixed(0)} s`) : null),
+      el("td", {}, old ? el("span", { class: "hint" }, "旧版本报告，请重新分析") : (sm.pass_text || "—"), sm.top_issue && !old ? el("div", { class: "hint clamp" }, "重点：" + sm.top_issue) : null),
+      el("td", { class: "nowrap" }, el("span", { class: `pill ${j.status}` }, JOB_STATUS[j.status] || j.status), j.error ? el("div", { class: "hint" }, j.error.slice(0, 80)) : null,
+        j.reason ? el("div", { class: "hint reason" }, j.reason) : null,
+        active ? el("div", { class: "job-prog" }, el("div", { class: "bar thin" }, el("div", { style: `width:${Math.round((j.progress || 0) * 100)}%` })), el("div", { class: "hint" }, jobProgressText(j))) : null),
+      el("td", { class: "nowrap actions" }, j.status === "done" ? el("a", { href: jobHref(j), class: "button" }, isGroup(j) ? "集体总览" : "打开报告") : null,
+        active ? null : el("button", { class: "danger", title: "删除这条分析记录", onclick: (e) => del(e, j) }, "删除"))));
+  }
+  box.append(t);
+}
+
+// unfinished analyses have no page of their own: their progress is shown in the history and the task tray
+const isGroup = (j) => ((j && j.request) || {}).mode === "group";
+const jobHref = (j) => (isGroup(j) ? `#/group/${j.id}` : `#/job/${j.id}`);
+async function openJob(id, person = null) {
   const job = await api(`/api/jobs/${id}`).catch((e) => ({ status: "error", error: e.message }));
-  if (job.status === "done") return openReport(id);
-  show("view-progress");
-  $("#bar-fill").style.width = `${Math.round((job.progress || 0) * 100)}%`;
-  const ol = $("#stages"); ol.replaceChildren();
-  const cur = STAGES.findIndex(([k]) => k === job.stage);
-  STAGES.forEach(([k, label], i) => ol.append(el("li", { class: i < cur ? "done" : i === cur ? "cur" : "" }, label)));
-  if (job.status === "error") { $("#progress-msg").textContent = "分析失败：" + job.error; return; }
-  pollTimer = setTimeout(() => openJob(id), 1000);
+  if (job.status === "done" && isGroup(job) && person === null) { location.replace(`#/group/${id}`); return; }
+  if (job.status === "done") return openReport(id, person);
+  if (job.id) TASKS.jobs.set(job.id, job);
+  location.replace("#/jobs");
+  refreshTasks();
+}
+
+/** simple (default for everyone): cards + paired videos + skeleton comparison; detailed: the full workbench */
+function setDetail(on) {
+  $("#view-report").classList.toggle("simple", !on);
+  $$("#r-mode button").forEach((b) => b.classList.toggle("on", (b.dataset.m === "detail") === on));
+  try { localStorage.setItem("mc-detail", on ? "1" : "0"); } catch (e) { /* storage unavailable: per-visit only */ }
+  if (on) requestAnimationFrame(redrawAll);
+}
+function initDetail() {
+  let on = false;
+  try { on = localStorage.getItem("mc-detail") === "1"; } catch (e) { /* default */ }
+  $$("#r-mode button").forEach((b) => { b.onclick = () => setDetail(b.dataset.m === "detail"); });
+  setDetail(on);
+}
+
+/** "这里识别不对": the user names the section and its time in the practitioner video, and a new analysis runs
+ *  with that interval fixed (manual scope); the original report stays as it was. */
+async function openCorrection(segId) {
+  const box = $("#r-correct");
+  if (R.person !== null && R.person !== undefined) {
+    box.replaceChildren(el("p", {}, "多人分析的动作段由集体统一确定：请在集体总览的“修正动作段”中修改。"),
+      el("a", { class: "button", href: `#/group/${R.jobId}` }, "去集体总览"));
+    box.classList.remove("hidden"); return;
+  }
+  const job = await api(`/api/jobs/${R.jobId}`);
+  const refs = await api("/api/references");
+  const segs = (refs.find((r) => r.id === job.request.reference_id) || { segments: [] }).segments;
+  const cur = R.rep.segments.find((s) => s.id === segId) || R.rep.segments[0];
+  const opts = (sel) => segs.map((s) => el("option", { value: s.id, selected: s.id === sel }, s.name));
+  const from = el("select", { id: "fix-from" }, ...opts(cur.id)), to = el("select", { id: "fix-to" }, ...opts(cur.id));
+  const a = el("input", { id: "fix-a", type: "number", step: "0.5", min: "0", value: cur.user_start.toFixed(1) });
+  const b = el("input", { id: "fix-b", type: "number", step: "0.5", min: "0", value: cur.user_end.toFixed(1) });
+  const msg = el("p", { class: "msg" });
+  const useNow = (inp) => el("button", { onclick: () => { inp.value = vUser().currentTime.toFixed(1); } }, "取当前画面时间");
+  box.replaceChildren(
+    el("h3", {}, "修正动作段"),
+    el("p", { class: "hint" }, "选择这段时间里练习者实际做的动作段，并给出它在练习者视频中的起止（可先拖动画面，再点“取当前画面时间”）。将按此重新分析，原报告保留。"),
+    el("div", { class: "fix-row" }, el("label", {}, "动作段 ", from, " 到 ", to)),
+    el("div", { class: "fix-row" }, el("label", {}, "练习者视频 ", a, " 秒"), useNow(a), el("label", {}, " 至 ", b, " 秒"), useNow(b)),
+    el("div", { class: "fix-row" },
+      el("button", { class: "primary", onclick: async () => {
+        const body = { ...job.request, scope_mode: "manual", seg_from: from.value, seg_to: to.value, user_start: +a.value, user_end: +b.value };
+        if (!(body.user_end > body.user_start)) { msg.textContent = "结束时间应晚于开始时间。"; return; }
+        try { const j = await api("/api/jobs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+          TASKS.jobs.set(j.id, j); refreshTasks(); location.hash = "#/jobs"; }
+        catch (e) { msg.textContent = "无法开始：" + e.message; }
+      } }, "按此重新分析"),
+      el("button", { onclick: () => box.classList.add("hidden") }, "取消")),
+    msg);
+  box.classList.remove("hidden");
+  box.scrollIntoView({ block: "nearest" });
+}
+
+/** joints filled across a short gap at sample i (pose payload "filled": [[sample, joint], ...]), as a Set */
+function filledAt(P, i) {
+  if (!P.filledBy) { P.filledBy = new Map(); for (const [a, b] of P.filled || []) { if (!P.filledBy.has(a)) P.filledBy.set(a, new Set()); P.filledBy.get(a).add(b); } }
+  return P.filledBy.get(i) || new Set();
 }
 
 // ================================================================== report workbench
-const R = { rep: null, poses: {}, seg: null, feat: null, master: "ref", raf: 0, normMode: "now", heatOpen: false, view: null, hoverX: null, sel: null };
+const R = { rep: null, poses: {}, seg: null, feat: null, master: "user", raf: 0, normMode: "now", heatOpen: false, view: null, hoverX: null, sel: null };
 
-async function openReport(id) {
+/** in a group job the workbench shows one performer: back link to the overview and a performer switcher */
+async function personHeader(id, person) {
+  const back = $("#r-back"), box = $("#r-person");
+  if (person === null) { back.href = "#/jobs"; back.textContent = "← 分析记录"; box.classList.add("hidden"); return; }
+  back.href = `#/group/${id}`; back.textContent = "← 集体总览";
+  const g = await api(`/api/jobs/${id}/group`).catch(() => null);
+  if (!g) return;
+  const sel = el("select", { id: "r-person-sel", "aria-label": "切换练习者",
+    onchange: (e) => { location.hash = `#/job/${id}/p/${e.target.value}`; } },
+    ...g.identities.filter((i) => i.report).map((i) => el("option", { value: i.id, selected: i.id === person }, `练习者 #${i.id}`)));
+  box.replaceChildren(el("span", { class: "who-dot", style: `background:${idColor(person, g)}` }), "当前：", sel);
+  box.classList.remove("hidden");
+}
+async function openReport(id, person = null) {
   show("view-report");
   vRef().pause(); vUser().pause();
-  const [rep, pr, pu] = await Promise.all([api(`/api/jobs/${id}/report`), api(`/api/jobs/${id}/poses/ref`), api(`/api/jobs/${id}/poses/user`)]);
-  if (!String(rep.schema).endsWith("0.3")) {
+  const q = person === null ? "" : `?person=${person}`;
+  const [rep, pr, pu] = await Promise.all([api(`/api/jobs/${id}/report${q}`), api(`/api/jobs/${id}/poses/ref${q}`), api(`/api/jobs/${id}/poses/user${q}`)]);
+  personHeader(id, person);
+  if (!/0\.[345]$/.test(String(rep.schema))) {
     $("#r-title").textContent = "旧版本报告";
     $("#r-scope").textContent = "该报告由早期版本生成，缺少有效性状态等数据，请重新分析。";
     return;
   }
-  Object.assign(R, { rep, poses: { ref: pr, user: pu }, jobId: id, master: "ref" });
-  $("#master").value = "ref";
+  // practitioner-led by default: each practitioner repetition replays the matching reference repetition
+  Object.assign(R, { rep, poses: { ref: pr, user: pu }, jobId: id, person, master: "user", curRep: null });
+  $("#r-correct").classList.add("hidden");
+  initDetail();
+  $("#master").value = "user";
   R.featIdx = Object.fromEntries(rep.features.map((f, i) => [f.name, i]));
   R.T = rep.series.t_ref;
   R.dt = R.T.length > 1 ? (R.T[R.T.length - 1] - R.T[0]) / (R.T.length - 1) : 0.1;
@@ -169,7 +428,7 @@ async function openReport(id) {
   buildMaps();
   R.view = [...rep.scope.ref_range];
   renderHead(); renderFindings(); renderDetails(); setupPlayer();
-  $("#csv").href = `/api/jobs/${id}/export.csv`;
+  $("#csv").href = `/api/jobs/${id}/export.csv${q}`;
   const first = rep.summary.top_issues[0];
   select(first ? first.segment : rep.segments[0].id, first ? first.feature : rep.features[0].name, { keepView: true });
   const t0 = R.deepT ?? (first ? first.time : rep.scope.ref_range[0]);
@@ -183,7 +442,24 @@ function whenReady(fn) {
 }
 const segById = (id) => R.rep.segments.find((s) => s.id === id);
 const featBy = (n) => R.rep.features[R.featIdx[n]];
-const fmtVal = (f, v, unit = false) => (v === null || v === undefined ? "—" : f.unit === "deg" ? `${Math.round(v)}${unit ? "°" : ""}` : `${v.toFixed(2)}${unit ? (f.name === "head_turn" ? " 肩宽" : " 躯干长") : ""}`);
+// lengths in torso units can also be shown in cm (report.scale: adult-average height unless stated)
+const LENGTH_FEATURES = new Set(["l_wrist_height", "r_wrist_height", "stance_width", "pelvis_height"]);
+const cmShown = () => !!(R.rep && R.rep.scale && R.rep.scale.reliable && R.rep.scale.method === "stated_height");
+const toCm = (f, v) => (cmShown() && LENGTH_FEATURES.has(f.name) && v !== null && v !== undefined
+  ? v * R.rep.scale.torso_cm : null);
+const fmtVal = (f, v, unit = false) => {
+  if (v === null || v === undefined) return "—";
+  if (f.unit === "deg") return `${Math.round(v)}${unit ? "°" : ""}`;
+  const cm = unit ? toCm(f, v) : null;
+  if (cm !== null) return `约 ${Math.round(cm)} cm（${v.toFixed(2)} 躯干长）`;
+  return `${v.toFixed(2)}${unit ? (f.name === "head_turn" ? " 肩宽" : " 躯干长") : ""}`;
+};
+function scaleNote(f) {   // how centimetres were obtained, shown next to length indicators
+  const sc = R.rep && R.rep.scale;
+  if (!sc || !LENGTH_FEATURES.has(f.name) || !cmShown()) return "";
+  if (!sc.reliable) return ` 厘米换算不可用：${sc.reason || "比例尺不可靠"}。`;
+  return ` 厘米按${sc.method === "average_height" ? `成年人平均身高 ${sc.height_cm} cm ` : `身高 ${sc.height_cm} cm `}换算（${sc.frames_used} 个直立画面，约 ±${Math.round(sc.rel_uncertainty * 100)}%）。`;
+}
 const fmtSigned = (f, v) => (v === null || v === undefined ? "—" : (v > 0 ? "+" : "") + fmtVal(f, v, true));
 
 /** status of feature f at reference sample i — the single place the client derives an instantaneous status */
@@ -192,8 +468,8 @@ function statusAt(i, fname) {
   if (si < 0) return "out";
   const cell = R.rep.segments[si].features[fname];
   if (cell.status === "na") return "na";
-  if (cell.status === "uncertain") return "uncertain";
-  const a = R.rep.series.ref[fname][i], b = R.rep.series.user[fname][i];
+  if (cell.status === "uncertain" || cell.status === "imprecise") return cell.status;
+  const a = R.rep.series.ref[fname][i], b = userSeries(fname)[i];
   if (a === null || b === null) return "missing";
   const f = featBy(fname), d = Math.abs(b - a);
   return d <= f.tolerance.good ? "good" : d <= f.tolerance.warn ? "warn" : "bad";
@@ -205,7 +481,8 @@ function renderHead() {
   const rep = R.rep, sc = rep.scope;
   const names = sc.segments.length > 1 ? `${segName(sc.segments[0])} — ${segName(sc.segments[sc.segments.length - 1])}` : segName(sc.segments[0]);
   $("#r-title").textContent = `${rep.profile.title} · ${names}`;
-  $("#r-scope").textContent = `分析区间：标准 ${sc.ref_range[0].toFixed(0)}–${sc.ref_range[1].toFixed(0)} 秒 ↔ 练习者 ${sc.user_range[0].toFixed(0)}–${sc.user_range[1].toFixed(0)} 秒 · ${rep.model.backend}（${rep.model.device === "cpu" ? "CPU" : "GPU"}）`;
+  $("#r-scope").textContent = `分析区间：标准 ${sc.ref_range[0].toFixed(0)}–${sc.ref_range[1].toFixed(0)} 秒 ↔ 练习者 ${sc.user_range[0].toFixed(0)}–${sc.user_range[1].toFixed(0)} 秒 · ${rep.model.backend}（${rep.model.device === "cpu" ? "CPU" : "GPU"}）`
+    + (rep.model.bounds_backend && rep.model.bounds_backend !== rep.model.backend ? ` · 段边界 ${rep.model.bounds_backend}` : "");
   const notes = [];
   if (rep.left_right.text) notes.push("左右方向：" + rep.left_right.text);
   notes.push(...rep.quality.warnings);
@@ -213,6 +490,17 @@ function renderHead() {
   const badges = $("#r-badges"); badges.replaceChildren();
   if (rep.profile.status === "draft" || rep.reference.status === "draft") badges.append(el("span", { class: "badge warn" }, "⚠ 草案规则 · 仅供算法验证"));
   if (sc.needs_review) badges.append(el("span", { class: "badge err" }, "区间待人工核查"));
+  const scl = rep.scale;
+  if (scl) {   // lengths are shown in body proportions; centimetres only from the practitioner's own height
+    const txt = cmShown()
+      ? `长度另以厘米显示：按填写的身高 ${scl.height_cm} cm 换算（${scl.frames_used} 个直立画面，约 ±${Math.round(scl.rel_uncertainty * 100)}%），仅供参考；比较与判定按身体比例进行。`
+      : scl.method === "stated_height"
+        ? `厘米换算不可用：${scl.reason || "比例尺不可靠"}，长度只显示为躯干长的倍数。`
+        : "长度以身体比例（躯干长、肩宽的倍数）显示；新建分析时填写本人身高后，可另外显示估算的厘米值。";
+    notes.unshift(txt);
+    box.replaceChildren(...notes.map((n) => el("p", {}, n)));
+    badges.append(el("span", { class: "badge", title: txt }, cmShown() ? `身高 ${scl.height_cm} cm` : "长度按身体比例"));
+  }
   badges.append(el("button", { class: "badge", onclick: () => box.classList.toggle("hidden") }, `注意事项 ${notes.length} ▾`));
   box.classList.toggle("hidden", !sc.needs_review);
 }
@@ -220,19 +508,25 @@ function renderFindings() {
   const rep = R.rep, box = $("#findings"); box.replaceChildren();
   const top = rep.summary.top_issues;
   if (!top.length) box.append(el("div", { class: "finding" }, el("div", { class: "what" }, "重点指标未发现超出允许范围的偏差"),
-    el("div", { class: "how" }, "注意：不可评价的指标不在此列，请查看右侧计数。")));
+    el("div", { class: "how" }, "注意：不可评价、测量不确定的指标不在此列，请查看右侧计数。")));
   top.forEach((it, k) => {
-    const f = featBy(it.feature);
-    const card = el("button", { class: `finding ${it.status}`, "data-k": `${it.segment}|${it.feature}`,
-      onclick: () => { select(it.segment, it.feature); zoomTo(segById(it.segment)); seekRef(it.time); } },
+    const f = featBy(it.feature), c = it.card;
+    const go = () => { select(it.segment, it.feature); zoomTo(segById(it.segment)); };
+    const look = () => { go(); if (c && c.user_time !== null && c.user_time !== undefined) { setMaster("user"); seekUser(c.user_time); } else seekRef(it.time); };
+    const card = el("div", { class: `finding ${it.status}`, "data-k": `${it.segment}|${it.feature}` },
       el("div", { class: "rank" }, el("b", {}, String(k + 1)), `${it.segment_name.replace(/^第.式 /, "")} · ${rep.status_labels[it.status]}`),
       el("div", { class: "what" }, it.label),
-      el("div", { class: "num" }, fmtVal(f, it.value, false), el("small", {}, `${f.unit === "deg" ? "°" : f.name === "head_turn" ? "肩宽" : "躯干长"} · ${it.signed > 0 ? f.more : f.less}`)),
-      el("div", { class: "how" }, it.text));
+      c ? el("div", { class: "how card-text" }, c.text)
+        : el("div", { class: "num" }, fmtVal(f, it.value, false), el("small", {}, `${f.unit === "deg" ? "°" : f.name === "head_turn" ? "肩宽" : "躯干长"} · ${it.signed > 0 ? f.more : f.less}`)),
+      it.spread_note ? el("div", { class: "hint" }, it.spread_note) : null,
+      el("div", { class: "card-act" },
+        el("button", { onclick: look }, "看对应画面"),
+        el("button", { onclick: () => { go(); setDetail(true); seekRef(it.time); } }, "看其他重复"),
+        el("button", { onclick: () => openCorrection(it.segment) }, "这里识别不对")));
     box.append(card);
   });
   const s = rep.summary, c = s.counts || {};
-  const evaluated = (c.good || 0) + (c.warn || 0) + (c.bad || 0), notEval = (c.unmeasurable || 0) + (c.na || 0) + (c.uncertain || 0);
+  const evaluated = (c.good || 0) + (c.warn || 0) + (c.bad || 0), notEval = (c.unmeasurable || 0) + (c.na || 0) + (c.uncertain || 0) + (c.imprecise || 0);
   $("#r-summary").replaceChildren(
     el("div", {}, el("span", { class: "big" }, `${c.good || 0}/${evaluated}`), " 个可评价重点指标达标"),
     el("div", { class: "row" }, "不可评价", el("b", {}, `${notEval} 项`)),
@@ -246,6 +540,17 @@ function buildMaps() {
   const t = R.T, u = R.rep.series.user_t, rt = [], ut = [];
   t.forEach((x, i) => { if (u[i] !== null) { rt.push(x); ut.push(u[i]); } });
   R.map = { rt, ut };
+  R.pb = R.rep.playback || null;   // 0.5: loop / jump playback maps on the analysis grid
+  R.hasReps = R.rep.segments.some((s) => s.reps);
+}
+function gridMap(t0, dt, ys, x) {   // ys sampled at t0 + k dt; ~1x outside the range
+  const n = ys.length;
+  if (!n) return x;
+  const k = (x - t0) / dt;
+  if (k <= 0) return ys[0] + (x - t0);
+  if (k >= n - 1) return ys[n - 1] + (x - t0 - (n - 1) * dt);
+  const i = Math.floor(k), w = k - i;
+  return ys[i] + w * (ys[i + 1] - ys[i]);
 }
 function interp(xs, ys, x) {
   if (!xs.length) return x;
@@ -256,8 +561,42 @@ function interp(xs, ys, x) {
   const w = xs[hi] === xs[lo] ? 0 : (x - xs[lo]) / (xs[hi] - xs[lo]);
   return ys[lo] + w * (ys[hi] - ys[lo]);
 }
-const refToUser = (t) => Math.max(0, interp(R.map.rt, R.map.ut, t));
-const userToRef = (u) => Math.max(0, interp(R.map.ut, R.map.rt, u));
+// reference-led: reference time -> practitioner time; practitioner-led: practitioner time -> reference time.
+// Between repetitions the shown video runs at ~1x and jumps (loop back to the template / skip extra repetitions).
+const refToUser = (t) => Math.max(0, R.pb ? gridMap(R.pb.ref_t0, R.pb.dt, R.pb.user_t_for_ref, t) : interp(R.map.rt, R.map.ut, t));
+const userToRef = (u) => Math.max(0, R.pb ? gridMap(R.pb.user_t0, R.pb.dt, R.pb.ref_t_for_user, u) : interp(R.map.ut, R.map.rt, u));
+function repAtUser(u) {   // [segment, repetition index] of the practitioner repetition containing time u
+  for (const s of R.rep.segments) {
+    if (!s.reps || s.reps.repeated === false) continue;
+    for (const [k, r] of (s.reps.user || []).entries()) if (u >= r.start && u <= r.end) return [s, k];
+  }
+  return [null, -1];
+}
+// the practitioner repetition on screen (practitioner-led): curves, values and the skeleton follow it
+function currentRep() {
+  if (R.master !== "user") return null;
+  const [s, k] = repAtUser(vUser().currentTime);
+  if (!s) return null;
+  const u = s.reps.user[k];
+  return u && u.paired && u.series ? { seg: s, k, u, refRep: s.reps.ref[u.ref] } : null;
+}
+function repLabel() {
+  const [s, k] = repAtUser(vUser().currentTime);
+  if (!s) return "";
+  const u = s.reps.user[k], n = s.reps.user.length, nr = s.reps.ref.length;
+  return `练习者第 ${k + 1}/${n} 次 ↔ 标准第 ${u.ref + 1}${nr > 1 ? `/${nr}` : ""} 次${u.mirror ? "（镜像侧）" : ""}`;
+}
+const _useries = {};
+function userSeries(fname) {   // default-aligned series, with the playing repetition substituted on its reference interval
+  const base = R.rep.series.user[fname], c = currentRep();
+  if (!c) return base;
+  const key = `${c.seg.id}|${c.k}|${fname}`;
+  if (_useries.key === key) return _useries.arr;
+  const arr = base.slice(), i0 = nearestIdx(R.T, c.refRep.start), vals = c.u.series[fname] || [];
+  for (let j = 0; j < vals.length && i0 + j < arr.length; j++) arr[i0 + j] = vals[j];
+  _useries.key = key; _useries.arr = arr;
+  return arr;
+}
 function nearestIdx(arr, x) {
   let lo = 0, hi = arr.length - 1;
   while (hi - lo > 1) { const m = (lo + hi) >> 1; if (arr[m] <= x) lo = m; else hi = m; }
@@ -334,7 +673,10 @@ function drawTimeline() {
     if (r.k.startsWith("lane:")) { const f = featBy(r.k.slice(5)); lab = f.label; }
     if (!lab) continue;
     const sel = r.k === "lane:" + R.feat || r.k === "feat";
-    g.fillStyle = sel ? css("--ink") : css("--ink2");
+    const ident = r.k === "ref" ? "--ref" : r.k === "user" ? "--user" : null;
+    if (ident) { g.fillStyle = css(ident); g.fillRect(0, r.y + 4, 4, r.h - 8); }
+    g.fillStyle = ident ? css(ident) : sel ? css("--ink") : css("--ink2");
+    if (ident) { g.font = "700 12px system-ui"; g.fillText(lab, 9, r.y + r.h / 2, TL.G - 14); continue; }
     g.font = `${sel ? "700 " : ""}${r.k.startsWith("lane") ? 10 : 12}px system-ui`;
     g.fillText(lab, 6, r.y + r.h / 2, TL.G - 10);
   }
@@ -353,27 +695,53 @@ function drawTimeline() {
     const col = segColor(s), sel = s.id === R.seg;
     const x0 = clipX(tx(s.ref_start)), x1 = clipX(tx(s.ref_end));
     const u0 = clipX(ux(s.user_start, UV)), u1 = clipX(ux(s.user_end, UV));
-    g.globalAlpha = sel ? 0.30 : 0.16; g.fillStyle = col;
-    g.beginPath(); g.moveTo(x0, lr.y); g.lineTo(x1, lr.y); g.lineTo(u1, lr.y + lr.h); g.lineTo(u0, lr.y + lr.h); g.closePath(); g.fill();
+    const RP = s.reps && s.reps.user.length && s.reps.repeated !== false ? s.reps : null;
+    const band = (a, b, c, d) => { g.beginPath(); g.moveTo(a, lr.y); g.lineTo(b, lr.y); g.lineTo(d, lr.y + lr.h); g.lineTo(c, lr.y + lr.h); g.closePath(); g.fill(); };
+    g.globalAlpha = RP ? 0.07 : sel ? 0.30 : 0.16; g.fillStyle = col; band(x0, x1, u0, u1);
+    if (RP) for (const r of RP.user) {   // one band per paired repetition: reference repetition <-> practitioner repetition
+      if (!r.paired) continue;
+      const q = RP.ref[r.ref];
+      g.globalAlpha = r.default ? (sel ? 0.7 : 0.4) : (sel ? 0.28 : 0.14);
+      band(clipX(tx(q.start)), clipX(tx(q.end)), clipX(ux(r.start, UV)), clipX(ux(r.end, UV)));
+    }
     g.globalAlpha = 1;
     for (const [a, b, r] of [[x0, x1, rr], [u0, u1, urw]]) {
       if (b - a < 1) continue;
       g.fillStyle = css("--card"); g.fillRect(a + 1, r.y + 2, b - a - 2, r.h - 4);
       g.fillStyle = col; g.globalAlpha = sel ? 0.55 : 0.35; g.fillRect(a + 1, r.y + 2, b - a - 2, r.h - 4); g.globalAlpha = 1;
-      if (sel) { g.strokeStyle = css("--accent"); g.lineWidth = 2; g.strokeRect(a + 1, r.y + 2, b - a - 2, r.h - 4); }
+      g.fillStyle = css(r === rr ? "--ref" : "--user"); g.fillRect(a + 1, r.y + r.h - 5, b - a - 2, 3);   // identity base line
+      if (sel) { g.strokeStyle = css("--ink"); g.lineWidth = 2; g.strokeRect(a + 1, r.y + 2, b - a - 2, r.h - 4); }
       g.fillStyle = css("--ink"); g.font = `${sel ? "700 " : ""}12px system-ui`;
       const name = s.name.replace(/^第(.)式 /, "$1 ");
       if (b - a > 30) g.fillText(name, a + 6, r.y + (r === urw ? 11 : r.h / 2), b - a - 10);
+    }
+    // repetition intervals (active cores): solid = paired with the reference, hollow = no counterpart
+    if (RP) {
+      const reps = [...RP.ref.map((q) => [q.start, q.end, true, rr, tx]), ...RP.user.map((q) => [q.start, q.end, q.paired, urw, (v) => ux(v, UV)])];
+      for (const [a0, b0, ok, row, X] of reps) {
+        const a = clipX(X(a0)), b = clipX(X(b0)); if (b - a < 2) continue;
+        const y = row === rr ? row.y + row.h - 11 : row.y + 14;   // practitioner: above its own time labels
+        g.fillStyle = css("--ink"); g.strokeStyle = css("--ink"); g.lineWidth = 1; g.globalAlpha = sel ? 0.75 : 0.4;
+        if (ok) g.fillRect(a + 1, y, b - a - 2, 4); else g.strokeRect(a + 1.5, y + 0.5, b - a - 3, 3);
+        g.globalAlpha = 1;
+      }
+      const cu = RP.count_user, cr = RP.count_ref, ub = u1 - u0;
+      const lbl = `${cu} 次 · 标准 ${cr} 次`;
+      g.font = "12px system-ui"; const need = g.measureText(s.name.replace(/^第(.)式 /, "$1 ")).width + 30;
+      g.font = "11px system-ui";
+      if ((cu > 1 || cr > 1) && ub > need + g.measureText(lbl).width) {   // only where it does not cover the name
+        g.fillStyle = css("--ink"); g.textAlign = "right"; g.fillText(lbl, u1 - 6, urw.y + 11); g.textAlign = "left";
+      }
     }
     // key moments (ticks) on the reference track
     g.strokeStyle = css("--ink"); g.lineWidth = sel ? 1.5 : 1; g.globalAlpha = sel ? 0.9 : 0.35;
     for (const h of s.hold_times) { const x = tx(h); if (x < TL.G || x > W - TL.PAD) continue; g.beginPath(); g.moveTo(x, rr.y + rr.h - (sel ? 9 : 5)); g.lineTo(x, rr.y + rr.h - 2); g.stroke(); }
     g.globalAlpha = 1;
   });
-  // correspondence lines
+  // correspondence lines (older reports without repetition bands)
   g.strokeStyle = css("--axis"); g.lineWidth = 1;
   const lstep = niceStep(span, (W - TL.G) / 2.5);
-  for (let t = Math.ceil(R.view[0] / lstep) * lstep; t <= R.view[1]; t += lstep) {
+  if (!R.hasReps) for (let t = Math.ceil(R.view[0] / lstep) * lstep; t <= R.view[1]; t += lstep) {
     g.beginPath(); g.moveTo(tx(t), lr.y + 1); g.lineTo(ux(refToUser(t), UV), lr.y + lr.h - 1); g.stroke();
   }
   // practitioner ruler ticks (its own time)
@@ -413,12 +781,15 @@ function drawTimeline() {
     TL.markers.push({ x, y: y + 6, it });
   });
   // playhead (reference) and its mapped position on the practitioner track
-  const t = currentRefTime(), xp = tx(t), xu = ux(refToUser(t), UV);
-  g.strokeStyle = css("--bad"); g.fillStyle = css("--bad"); g.lineWidth = 2;
+  const t = currentRefTime(), xp = tx(t), xu = ux(R.master === "user" ? vUser().currentTime : refToUser(t), UV);
+  g.strokeStyle = css("--ink"); g.fillStyle = css("--ink"); g.lineWidth = 2;
   if (xp >= TL.G && xp <= W - TL.PAD) {
     g.beginPath(); g.moveTo(xp, 0); g.lineTo(xp, lr.y); g.lineTo(xu, lr.y + lr.h); g.lineTo(xu, urw.y + urw.h); g.stroke();
     g.beginPath(); g.moveTo(xp, tlRow("feat").y); g.lineTo(xp, TL.H); g.stroke();
     g.beginPath(); g.moveTo(xp - 6, 0); g.lineTo(xp + 6, 0); g.lineTo(xp, 8); g.closePath(); g.fill();
+    for (const [x, y, v] of [[xp, rr.y + rr.h / 2, "--ref"], [xu, urw.y + urw.h / 2, "--user"]]) {   // which track is which
+      g.fillStyle = css(v); g.strokeStyle = css("--card"); g.lineWidth = 2; g.beginPath(); g.arc(x, y, 5, 0, 7); g.fill(); g.stroke();
+    }
   }
 }
 function toggleHeat() {   // the expanded 14-lane view is tall: stop sticking so it never covers the layers below
@@ -434,7 +805,7 @@ function segAtX(x, row) {
 }
 let tlDrag = null;
 function tlSeekAt(x, mode) {
-  if (mode === "user") seekRef(userToRef(uxInv(x, userView())));
+  if (mode === "user") { setMaster("user"); seekUser(uxInv(x, userView())); }
   else seekRef(txInv(x));
 }
 function setupTimeline() {
@@ -508,7 +879,7 @@ function tlTooltip(x, y) {
     if (s) lines.push(s.name);
     const fname = row.k.startsWith("lane:") ? row.k.slice(5) : (row.k === "feat" || row.k === "ref" || row.k === "link") ? R.feat : null;
     if (fname && s) {
-      const f = featBy(fname), st = statusAt(i, fname), a = R.rep.series.ref[fname][i], b = R.rep.series.user[fname][i];
+      const f = featBy(fname), st = statusAt(i, fname), a = R.rep.series.ref[fname][i], b = userSeries(fname)[i];
       lines.push(`${f.label}：${R.rep.status_labels[st] || { missing: "缺失" }[st] || st}  标准 ${fmtVal(f, a, true)} · 练习者 ${fmtVal(f, b, true)}`);
     }
     if (row.k === "pat" && R.rep.patterns.labels[i] >= 0) {
@@ -534,6 +905,16 @@ function seekRef(t) {
   followView(t);
   tick(true);
 }
+function seekUser(u) {   // practitioner-master seek: keeps the exact repetition clicked
+  const [A, B] = R.rep.scope.ref_range;
+  vUser().currentTime = clamp(u, refToUser(A), refToUser(B - 0.01));
+  syncSlave(true); followView(currentRefTime()); tick(true);
+}
+function setMaster(m) {
+  if (R.master === m) return;
+  const t = currentRefTime(); master().pause(); R.master = m; $("#master").value = m; slave().pause();
+  vRef().muted = m !== "ref"; vUser().muted = m === "ref"; master().playbackRate = +$("#rate").value; seekRef(t);
+}
 function followView(t) {
   const [a, b] = R.view, span = b - a;
   if (t < a || t > b) setView(t - span * 0.2, t + span * 0.8);
@@ -549,8 +930,7 @@ function setupPlayer() {
   $("#step-back").onclick = () => seekRef(currentRefTime() - 0.5);
   $("#step-fwd").onclick = () => seekRef(currentRefTime() + 0.5);
   $("#rate").onchange = () => { master().playbackRate = +$("#rate").value; };
-  $("#master").onchange = () => { const t = currentRefTime(); master().pause(); R.master = $("#master").value; slave().pause();
-    vRef().muted = R.master !== "ref"; vUser().muted = R.master === "ref"; master().playbackRate = +$("#rate").value; seekRef(t); };
+  $("#master").onchange = () => setMaster($("#master").value);
   for (const id of ["#ly-skel", "#ly-joint", "#ly-arrow"]) $(id).onchange = () => { drawOverlays(); drawNorm(); };
   $$("#norm-mode button").forEach((b) => b.addEventListener("click", () => {
     R.normMode = b.dataset.m; $$("#norm-mode button").forEach((x) => x.classList.toggle("on", x === b)); drawNorm();
@@ -601,7 +981,8 @@ function loop() {
     const t = currentRefTime(), [, B] = R.rep.scope.ref_range;
     if (t >= B - 0.02) { master().pause(); return; }   // playback stays inside the analysed range
     syncSlave(false);
-    const [a, b] = R.view; if (t > b - (b - a) * 0.05) setView(t - (b - a) * 0.1, t + (b - a) * 0.9);
+    const [a, b] = R.view;
+    if (t > b - (b - a) * 0.05 || t < a) setView(t - (b - a) * 0.1, t + (b - a) * 0.9);   // loops jump back
     tick(false);
     R.raf = requestAnimationFrame(step);
   };
@@ -611,9 +992,11 @@ let lastHeavy = -1;
 function tick(force) {
   if (!R.rep || !R.feat) return;
   const t = currentRefTime();
-  $("#clock").textContent = `标准 ${t.toFixed(1)} 秒 ↔ 练习者 ${vUser().currentTime.toFixed(1)} 秒`;
+  const lab = repLabel();
+  $("#clock").textContent = lab ? `${lab} · 练习者 ${vUser().currentTime.toFixed(1)} 秒 ↔ 标准 ${t.toFixed(1)} 秒`
+    : `练习者 ${vUser().currentTime.toFixed(1)} 秒 ↔ 标准 ${t.toFixed(1)} 秒`;
   $("#cap-ref").textContent = `${vRef().currentTime.toFixed(1)} s`;
-  $("#cap-user").textContent = `${vUser().currentTime.toFixed(1)} s`;
+  $("#cap-user").textContent = `${vUser().currentTime.toFixed(1)} s${lab ? " · " + lab.split(" ↔ ")[0].replace("练习者", "") : ""}`;
   const i = nearestIdx(R.T, t), si = R.segOf[i];
   if (si >= 0 && R.rep.segments[si].id !== R.seg) { R.seg = R.rep.segments[si].id; renderChips(); renderFocus(); renderHeatSel(); }
   drawTimeline(); drawOverlays();
@@ -642,17 +1025,35 @@ function drawOverlay(side, video, canvas) {
   const [fw, fh] = P.frame_size, sc = Math.min(W / fw, H / fh), ox = (W - fw * sc) / 2, oy = (H - fh * sc) / 2;
   const xy = P.xy[i], cf = P.conf[i], thr = P.conf_thr ?? 50;
   const idx = Object.fromEntries(P.joints.map((j, k) => [j, k]));
-  const pt = (k) => (k === undefined || xy[2 * k] < 0 || cf[k] < thr ? null : [ox + xy[2 * k] * sc, oy + xy[2 * k + 1] * sc]);
+  const filled = filledAt(P, i);                    // filled across a short gap: drawn dashed / hollow, not as observed
+  const pt = (k) => (k === undefined || xy[2 * k] < 0 || (cf[k] < thr && !filled.has(k)) ? null : [ox + xy[2 * k] * sc, oy + xy[2 * k + 1] * sc]);
+  const idc = css(side === "ref" ? "--ref" : "--user");
   g.lineCap = "round";
-  g.strokeStyle = "rgba(255,255,255,0.8)"; g.lineWidth = 2;
-  for (const [p, q] of P.edges) { const A = pt(p), B = pt(q); if (A && B) { g.beginPath(); g.moveTo(...A); g.lineTo(...B); g.stroke(); } }
-  g.fillStyle = "rgba(255,255,255,0.9)";
-  P.joints.forEach((j, k) => { if (/eye|ear|mouth|face|hand|thumb|pinky|index$/.test(j) && !/foot_index/.test(j)) return; const A = pt(k); if (A) { g.beginPath(); g.arc(A[0], A[1], 2.4, 0, 7); g.fill(); } });
+  for (const [w, c] of [[4.5, "rgba(0,0,0,0.55)"], [2.2, idc]]) {   // dark halo keeps the colour readable on any frame
+    g.strokeStyle = c; g.lineWidth = w;
+    for (const [p, q] of P.edges) {
+      const A = pt(p), B = pt(q);
+      if (!A || !B) continue;
+      g.setLineDash(filled.has(p) || filled.has(q) ? [5, 4] : []);
+      g.beginPath(); g.moveTo(...A); g.lineTo(...B); g.stroke();
+    }
+  }
+  g.setLineDash([]);
+  g.fillStyle = idc; g.strokeStyle = idc; g.lineWidth = 1.5;
+  P.joints.forEach((j, k) => {
+    if (/eye|ear|mouth|face|hand|thumb|pinky|index$/.test(j) && !/foot_index/.test(j)) return;
+    const A = pt(k);
+    if (!A) return;
+    g.beginPath(); g.arc(A[0], A[1], filled.has(k) ? 3.2 : 2.6, 0, 7);
+    filled.has(k) ? g.stroke() : g.fill();
+  });
   if (!$("#ly-joint").checked) return;
   // highlight the joints used by the selected indicator; angle features get an arc + value
   const f = featBy(R.feat), names = featureJointNames(side), pts = names.map((n) => pt(idx[n]));
   const ti = nearestIdx(R.T, t), st = statusAt(ti, R.feat);
-  const col = side === "ref" ? "#ffffff" : css(STATUS_VAR[st] || "--unm");
+  const col = idc;
+  g.strokeStyle = "#ffffff"; g.lineWidth = 6.5;
+  if (f.unit === "deg" && f.joints.length === 3 && pts.every(Boolean)) { g.beginPath(); g.moveTo(...pts[0]); g.lineTo(...pts[1]); g.lineTo(...pts[2]); g.stroke(); }
   g.strokeStyle = col; g.lineWidth = 4;
   if (f.unit === "deg" && f.joints.length === 3 && pts.every(Boolean)) {
     g.beginPath(); g.moveTo(...pts[0]); g.lineTo(...pts[1]); g.lineTo(...pts[2]); g.stroke();
@@ -661,12 +1062,15 @@ function drawOverlay(side, video, canvas) {
     g.lineWidth = 2; g.beginPath(); g.arc(pts[1][0], pts[1][1], 18, a1, a1 + d, d < 0); g.stroke();
     const v = R.rep.series[side === "ref" ? "ref" : "user"][R.feat][ti];
     if (v !== null) {
-      g.font = "700 14px system-ui"; const txt = `${Math.round(v)}°`, tw = g.measureText(txt).width;
-      const lx = clamp(pts[1][0] + 22, 4, W - tw - 8), ly = clamp(pts[1][1] - 10, 16, H - 6);
-      g.fillStyle = "rgba(0,0,0,0.7)"; g.fillRect(lx - 4, ly - 14, tw + 8, 19); g.fillStyle = col; g.fillText(txt, lx, ly);
+      const lab = side === "ref" ? "标准" : "练习者";
+      const stTxt = side === "user" && st !== "out" ? ` · ${R.rep.status_labels[st] || { missing: "缺失" }[st] || ""}` : "";
+      g.font = "700 13px system-ui"; const txt = `${lab} ${Math.round(v)}°${stTxt}`, tw = g.measureText(txt).width;
+      const lx = clamp(pts[1][0] + 22, 4, W - tw - 10), ly = clamp(pts[1][1] - 10, 18, H - 6);
+      g.fillStyle = col; g.beginPath(); g.roundRect(lx - 5, ly - 14, tw + 10, 20, 5); g.fill();
+      g.fillStyle = "#ffffff"; g.fillText(txt, lx, ly);
     }
   }
-  for (const p of pts) if (p) { g.lineWidth = 2.5; g.beginPath(); g.arc(p[0], p[1], 7, 0, 7); g.stroke(); }
+  for (const p of pts) if (p) { g.strokeStyle = "#ffffff"; g.lineWidth = 4.5; g.beginPath(); g.arc(p[0], p[1], 7, 0, 7); g.stroke(); g.strokeStyle = col; g.lineWidth = 2.5; g.stroke(); }
 }
 function drawOverlays() { if (!R.rep) return; drawOverlay("ref", vRef(), $("#c-ref")); drawOverlay("user", vUser(), $("#c-user")); }
 
@@ -686,8 +1090,12 @@ function drawNorm() {
     ref = pose2(sf.ref_pose); usr = pose2(sf.user_pose); ell = sf.ellipses;
     note = `本段 ${sf.samples} 个定势时刻的平均姿态；虚线椭圆 = 这些时刻偏差的分布（1 倍标准差），不是测量精度。`;
   } else {
-    const i = nearestIdx(R.T, t); ref = pose2(nz.ref[i]); usr = pose2(nz.user[i]);
-    note = "已减少体型与拍摄距离的影响，仍受二维视角与识别误差影响。橙色箭头 = 示范→练习者的位置偏移，不是要求移动的方向。";
+    const i = nearestIdx(R.T, t); ref = pose2(nz.ref[i]);
+    if (R.master === "user" && nz.user_own) {   // the practitioner frame on screen vs the reference frame it maps to
+      const j = Math.round((vUser().currentTime - nz.user_own_t0) / nz.user_own_dt);
+      usr = pose2(nz.user_own[clamp(j, 0, nz.user_own.length - 1)]);
+    } else usr = pose2(nz.user[i]);
+    note = "已减少体型与拍摄距离的影响，仍受二维视角与识别误差影响。灰色箭头 = 从标准示范（蓝）指向练习者（品红）的位置偏移，不是要求移动的方向。";
   }
   $("#norm-note").textContent = note;
   const box = { x0: -1.9, x1: 1.9, y0: -2.7, y1: 2.4 };
@@ -707,6 +1115,10 @@ function drawNorm() {
     g.fillStyle = color; pose.forEach((p) => { if (p) { g.beginPath(); g.arc(...P(p), 3, 0, 7); g.fill(); } });
   };
   skel(ref, css("--ref"), 3.5); skel(usr, css("--user"), 3);
+  g.font = "700 12px system-ui";
+  [["标准示范", "--ref"], ["练习者", "--user"]].forEach(([lab, v], k) => {
+    g.fillStyle = css(v); g.fillRect(10, 12 + k * 18, 16, 4); g.fillText(lab, 32, 17 + k * 18);
+  });
   // rings on joints used by the selected indicator
   if ($("#ly-joint").checked) {
     const ring = new Set(featBy(R.feat).joints);
@@ -714,10 +1126,10 @@ function drawNorm() {
     NJ().forEach((j, k) => { if (ring.has(j) && usr && usr[k]) { g.beginPath(); g.arc(...P(usr[k]), 8, 0, 7); g.stroke(); } });
   }
   if (ell) {
-    g.strokeStyle = css("--arrow"); g.lineWidth = 1.2; g.setLineDash([3, 3]);
+    g.strokeStyle = css("--user"); g.globalAlpha = 0.7; g.lineWidth = 1.2; g.setLineDash([3, 3]);
     ell.forEach((e, j) => { if (!e || !ref || !ref[j]) return; const c = P([ref[j][0] + e.cx, ref[j][1] + e.cy]);
       g.beginPath(); g.ellipse(c[0], c[1], Math.max(1, e.a * sc), Math.max(1, e.b * sc), (e.angle * Math.PI) / 180, 0, 7); g.stroke(); });
-    g.setLineDash([]);
+    g.setLineDash([]); g.globalAlpha = 1;
   }
   if ($("#ly-arrow").checked && ref && usr) {
     g.strokeStyle = css("--arrow"); g.fillStyle = css("--arrow"); g.lineWidth = 2;
@@ -755,7 +1167,7 @@ function drawCurve() {
   const [g, W, H] = ctx2d(cv);
   TL.W = TL.W || W;
   const X = (t) => TL.G + ((t - R.view[0]) / (R.view[1] - R.view[0])) * (W - TL.G - TL.PAD);
-  const f = featBy(R.feat), t = R.T, ref = R.rep.series.ref[R.feat], usr = R.rep.series.user[R.feat];
+  const f = featBy(R.feat), t = R.T, ref = R.rep.series.ref[R.feat], usr = userSeries(R.feat);
   const i0 = Math.max(0, nearestIdx(t, R.view[0]) - 1), i1 = Math.min(t.length - 1, nearestIdx(t, R.view[1]) + 1);
   let lo = Infinity, hi = -Infinity;
   for (let i = i0; i <= i1; i++) for (const v of [ref[i], usr[i]]) if (v !== null) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
@@ -799,14 +1211,15 @@ function drawCurve() {
   g.font = "10px system-ui"; g.fillStyle = css("--muted"); g.fillText("▲ 定势时刻", W - TL.PAD - 60, H - 4);
   // playhead + hover
   const xp = X(currentRefTime());
-  if (xp >= TL.G && xp <= W - TL.PAD) { g.strokeStyle = css("--bad"); g.lineWidth = 2; g.beginPath(); g.moveTo(xp, P.t); g.lineTo(xp, H - P.b); g.stroke(); }
+  if (xp >= TL.G && xp <= W - TL.PAD) { g.strokeStyle = css("--ink"); g.lineWidth = 2; g.beginPath(); g.moveTo(xp, P.t); g.lineTo(xp, H - P.b); g.stroke(); }
   const tip = $("#curve-tip");
   if (R.hoverX === null || R.hoverX < TL.G) { tip.classList.add("hidden"); return; }
   const th = R.view[0] + ((R.hoverX - TL.G) / (W - TL.G - TL.PAD)) * (R.view[1] - R.view[0]), i = nearestIdx(t, th);
   g.strokeStyle = css("--axis"); g.lineWidth = 1; g.beginPath(); g.moveTo(X(t[i]), P.t); g.lineTo(X(t[i]), H - P.b); g.stroke();
   for (const [arr, col] of [[ref, "--ref"], [usr, "--user"]]) if (arr[i] !== null) { g.fillStyle = css(col); g.strokeStyle = css("--card"); g.lineWidth = 2; g.beginPath(); g.arc(X(t[i]), Y(arr[i]), 4, 0, 7); g.fill(); g.stroke(); }
   const st = statusAt(i, R.feat), d = ref[i] !== null && usr[i] !== null ? usr[i] - ref[i] : null;
-  tip.replaceChildren(el("b", {}, `标准 ${t[i].toFixed(1)} 秒`), el("div", {}, `标准 ${fmtVal(f, ref[i], true)} · 练习者 ${fmtVal(f, usr[i], true)}`),
+  tip.replaceChildren(el("b", {}, `标准时间 ${t[i].toFixed(1)} 秒`),
+    el("div", {}, el("span", { class: "ref" }, "● 标准 "), fmtVal(f, ref[i], true), "　", el("span", { class: "user" }, "● 练习者 "), fmtVal(f, usr[i], true)),
     el("div", {}, `差值 ${fmtSigned(f, d)} · ${R.rep.status_labels[st] || { missing: "缺失", out: "区间外" }[st]}`));
   tip.classList.remove("hidden");
   tip.style.left = `${Math.min(W - 200, X(t[i]) + 10)}px`; tip.style.top = "6px";
@@ -829,33 +1242,38 @@ function renderFocus() {
   $("#focus-status").replaceChildren(el("span", { class: `sym ${c.status}` }, STATUS_GLYPH[c.status] || "?"),
     `${R.rep.status_labels[c.status]} · ${f.label}`);
   $("#focus-text").textContent = c.text || c.reason || "";
-  const def = `${f.desc}。允许偏差 ±${f.unit === "deg" ? f.tolerance.good + "°" : f.tolerance.good}；`
-    + (c.hold_n ? `本段典型偏差按 ${c.hold_valid}/${c.hold_n} 个有效定势时刻计算，整段有效覆盖 ${pct(c.coverage)}。` : "")
-    + (seg.flags.length ? " ⚠ " + seg.flags.join("；") : "") + (seg.note ? " 注：" + seg.note : "");
+  const tolCm = toCm(f, f.tolerance.good);
+  const def = `${f.desc}。允许偏差 ±${f.unit === "deg" ? f.tolerance.good + "°" : f.tolerance.good + (tolCm !== null ? `（约 ±${Math.round(tolCm)} cm）` : "")}；`
+    + (c.hold_n ? (seg.reps ? `本段典型偏差 = ${c.hold_valid}/${c.hold_n} 次对应上的重复中，与标准定势同一动作相位区间的差值中位数；有效覆盖 ${pct(c.coverage)}。`
+      : `本段典型偏差按 ${c.hold_valid}/${c.hold_n} 个有效定势时刻计算，整段有效覆盖 ${pct(c.coverage)}。`) : "")
+    + scaleNote(f) + (seg.flags.length ? " ⚠ " + seg.flags.join("；") : "") + (seg.note ? " 注：" + seg.note : "");
   $("#focus-def").textContent = def;
   renderFocusValues();
 }
 function renderFocusValues() {
   const seg = segById(R.seg), f = featBy(R.feat); if (!seg || !f) return;
-  const i = nearestIdx(R.T, currentRefTime()), a = R.rep.series.ref[R.feat][i], b = R.rep.series.user[R.feat][i];
+  const i = nearestIdx(R.T, currentRefTime()), a = R.rep.series.ref[R.feat][i], b = userSeries(R.feat)[i];
   const c = seg.features[R.feat];
   const box = $("#focus-values");
   box.replaceChildren(
-    el("div", {}, el("dt", {}, "此刻 · 标准"), el("dd", {}, fmtVal(f, a, true))),
-    el("div", {}, el("dt", {}, "此刻 · 练习者"), el("dd", {}, fmtVal(f, b, true))),
+    el("div", { class: "ref" }, el("dt", {}, "此刻 · 标准示范"), el("dd", {}, fmtVal(f, a, true))),
+    el("div", { class: "user" }, el("dt", {}, "此刻 · 练习者"), el("dd", {}, fmtVal(f, b, true))),
     el("div", {}, el("dt", {}, "此刻 · 差值"), el("dd", {}, statusAt(i, R.feat) === "na" ? "不可测" : fmtSigned(f, a !== null && b !== null ? b - a : null))),
     el("div", {}, el("dt", {}, "本段典型偏差"), el("dd", {}, c.value === undefined ? "—" : fmtVal(f, c.value, true))),
     el("div", {}, el("dt", {}, "本段用时"), el("dd", {}, seg.duration_ratio ? `${seg.duration_ratio.toFixed(2)} 倍` : "—")),
+    ...(seg.reps ? [el("div", { title: "练习者的每一次重复都与标准示范的对应重复比较；标准示范了左右两侧时按同侧对应" }, el("dt", {}, "重复次数"),
+      el("dd", {}, seg.reps.repeated === false ? "非重复动作（整段对应）"
+        : `标准 ${seg.reps.count_ref} · 练习者 ${seg.reps.count_user}${seg.reps.alternating ? "（左右交替）" : ""}`))] : []),
     el("div", {}, el("dt", {}, "对应可信度"), el("dd", {}, confidence(seg.align_cost))));
 }
 function renderNow() {
   const tb = $("#now"); if (!R.rep || !tb.closest("details").open) return;
   const i = nearestIdx(R.T, currentRefTime());
-  tb.replaceChildren(el("tr", {}, el("th", {}, "指标"), el("th", {}, "标准"), el("th", {}, "练习者"), el("th", {}, "差值"), el("th", {}, "状态")));
+  tb.replaceChildren(el("tr", {}, el("th", {}, "指标"), el("th", { class: "ref" }, "标准示范"), el("th", { class: "user" }, "练习者"), el("th", {}, "差值（练习者 − 标准）"), el("th", {}, "状态")));
   for (const f of R.rep.features) {
-    const a = R.rep.series.ref[f.name][i], b = R.rep.series.user[f.name][i], st = statusAt(i, f.name);
+    const a = R.rep.series.ref[f.name][i], b = userSeries(f.name)[i], st = statusAt(i, f.name);
     tb.append(el("tr", { "data-f": f.name, class: f.name === R.feat ? "sel" : "", onclick: () => select(R.seg, f.name) },
-      el("td", {}, f.label), el("td", {}, fmtVal(f, a, true)), el("td", {}, fmtVal(f, b, true)),
+      el("td", {}, f.label), el("td", { class: "ref" }, fmtVal(f, a, true)), el("td", { class: "user" }, fmtVal(f, b, true)),
       el("td", {}, st === "na" ? "不可测" : fmtSigned(f, a !== null && b !== null ? b - a : null)),
       el("td", {}, el("span", { class: `sym ${st === "missing" ? "unmeasurable" : st}`, style: "width:16px;height:16px;font-size:10px" }, STATUS_GLYPH[st] || ""))));
   }
@@ -870,7 +1288,7 @@ function renderDetails() {
   for (const f of rep.features) {
     const tr = el("tr", {}, el("th", { style: "text-align:left", title: f.desc }, f.label));
     for (const s of rep.segments) {
-      const c = s.features[f.name], glyph = c.status === "warn" ? "!" : c.status === "bad" ? "!!" : c.status === "uncertain" ? "≈" : "";
+      const c = s.features[f.name], glyph = c.status === "warn" ? "!" : c.status === "bad" ? "!!" : c.status === "uncertain" ? "≈" : c.status === "imprecise" ? "±" : "";
       tr.append(el("td", { class: `st-${c.status}${c.focus ? " focus" : ""}`, "data-k": `${s.id}|${f.name}`,
         title: `${s.name} · ${f.label}\n${rep.status_labels[c.status]}${c.reason ? "：" + c.reason : ""}${c.text ? "\n" + c.text : ""}`,
         onclick: () => { select(s.id, f.name); zoomTo(s); seekRef((s.hold_times[0] ?? s.ref_start) + 0.01); } },
@@ -879,7 +1297,7 @@ function renderDetails() {
     tb.append(tr);
   }
   const lg = $("#legend"); lg.replaceChildren();
-  for (const [s, lab] of [["good", "达标"], ["warn", "需注意 !"], ["bad", "偏差明显 !!"], ["uncertain", "对应不可靠 ≈"], ["unmeasurable", "不可评价"], ["na", "此视角不可测"]])
+  for (const [s, lab] of [["good", "达标"], ["warn", "需注意 !"], ["bad", "偏差明显 !!"], ["uncertain", "对应不可靠 ≈"], ["imprecise", "测量不确定 ±"], ["unmeasurable", "不可评价"], ["na", "此视角不可测"]])
     lg.append(el("span", {}, el("i", { class: `st-${s}` }), lab));
   lg.append(el("span", {}, "粗框 = 本段重点"));
   // patterns
@@ -967,5 +1385,8 @@ async function openBench(id) {
 (async () => {
   Object.assign(CFG, await api("/api/config").catch(() => ({})));
   $$(".dev-only").forEach((e) => e.classList.toggle("hidden", !CFG.dev_mode));
+  $("#tasks-chip").onclick = () => { TASKS.open = !TASKS.open; renderTasks(); };
+  document.addEventListener("click", (e) => { if (TASKS.open && !e.target.closest(".tasks")) { TASKS.open = false; renderTasks(); } });
   route();
+  refreshTasks();   // picks up analyses already running on the server (other testers, or before a reload)
 })();

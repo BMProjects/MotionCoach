@@ -52,6 +52,11 @@ class Reference:
         p = Path(self.raw["video"])
         return p if p.is_absolute() else self.root / p
 
+    def rep_templates(self) -> dict[str, list]:
+        """Annotated repetitions per section: id -> [[start, end, hold_start, hold_end], ...] ([] = not repeated).
+        Sections without a ``reps`` entry are left to automatic template detection."""
+        return {s["id"]: [list(map(float, r)) for r in s["reps"]] for s in self.raw.get("segments", []) if "reps" in s}
+
     def segments(self, profile: Profile) -> list[Segment]:
         return [Segment(s["id"], profile.segment_rule(s["id"]).get("name", s["id"]), float(s["start"]), float(s["end"]))
                 for s in self.raw.get("segments", [])]

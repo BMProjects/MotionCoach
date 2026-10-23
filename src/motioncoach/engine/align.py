@@ -42,51 +42,43 @@ def cost_matrix(R: np.ndarray, U: np.ndarray, scales: np.ndarray, min_valid: int
 
 
 @numba.njit(cache=True)
-def _subseq_dtw(C, step_penalty, skip_cost):
-    """Symmetric2 DTW (diagonal weight 2, vertical/horizontal weight 1).
+def _subseq_dtw(C, step_penalty, skip_cost, ref_skip_cost):
+    """Symmetric2 DTW (diagonal weight 2, vertical/horizontal weight 1) with priced free ends.
 
-    Unmatched user frames before the start / after the end cost ``skip_cost`` each, so every
-    hypothesis accounts for the whole user recording. Without this, a free start/end favours
-    squeezing the reference into a short user span (fewer cells = lower sum).
+    Unmatched user frames before the start / after the end cost ``skip_cost`` each, unmatched reference
+    frames ``ref_skip_cost`` each, so every hypothesis accounts for both recordings. Without the
+    prices, a free start/end favours squeezing the reference into a short user span (fewer cells =
+    lower sum). A very large ``ref_skip_cost`` reproduces "the whole reference must be matched".
     """
     N, M = C.shape
     D = np.empty((N, M), dtype=np.float32)
     B = np.zeros((N, M), dtype=np.int8)   # 0 diag, 1 from (i-1, j), 2 from (i, j-1), 3 path start
-    D[0, 0] = 2 * C[0, 0]
-    B[0, 0] = 3
-    for j in range(1, M):
-        start = skip_cost * j + 2 * C[0, j]
-        cont = D[0, j - 1] + C[0, j] + step_penalty
-        if start <= cont:
-            D[0, j] = start
-            B[0, j] = 3
-        else:
-            D[0, j] = cont
-            B[0, j] = 2
-    for i in range(1, N):
-        D[i, 0] = D[i - 1, 0] + C[i, 0] + step_penalty
-        B[i, 0] = 1
-        for j in range(1, M):
-            d = D[i - 1, j - 1] + 2 * C[i, j]
-            v = D[i - 1, j] + C[i, j] + step_penalty
-            h = D[i, j - 1] + C[i, j] + step_penalty
-            if d <= v and d <= h:
-                D[i, j] = d
-            elif v <= h:
-                D[i, j] = v
-                B[i, j] = 1
-            else:
-                D[i, j] = h
-                B[i, j] = 2
+    for i in range(N):
+        for j in range(M):
+            best = ref_skip_cost * i + skip_cost * j + 2 * C[i, j]
+            b = 3
+            if i > 0 and j > 0:
+                d = D[i - 1, j - 1] + 2 * C[i, j]
+                if d < best:
+                    best, b = d, 0
+            if i > 0:
+                v = D[i - 1, j] + C[i, j] + step_penalty
+                if v < best:
+                    best, b = v, 1
+            if j > 0:
+                h = D[i, j - 1] + C[i, j] + step_penalty
+                if h < best:
+                    best, b = h, 2
+            D[i, j] = best
+            B[i, j] = b
     return D, B
 
 
 @numba.njit(cache=True)
-def _backtrack(B, j_end):
-    N = B.shape[0]
-    i, j = N - 1, j_end
-    ri = np.empty(N + B.shape[1], dtype=np.int64)
-    uj = np.empty(N + B.shape[1], dtype=np.int64)
+def _backtrack(B, i_end, j_end):
+    i, j = i_end, j_end
+    ri = np.empty(B.shape[0] + B.shape[1], dtype=np.int64)
+    uj = np.empty(B.shape[0] + B.shape[1], dtype=np.int64)
     k = 0
     while True:
         ri[k] = i
@@ -120,17 +112,26 @@ class Alignment:
         return [np.asarray(v, dtype=np.int64) for v in out]
 
 
+NO_REF_SKIP = 1e6     # reference skip price meaning "the whole reference must be matched"
+
+
 def align(R: np.ndarray, U: np.ndarray, scales: np.ndarray, step_penalty: float = 0.02,
-          skip_cost: float = 1.0, min_valid: int = 3) -> Alignment:
+          skip_cost: float = 1.0, min_valid: int = 3, ref_skip_cost: float | None = None) -> Alignment:
     """``skip_cost`` (tolerance units per user frame) is the price of leaving user frames unmatched;
-    frames whose best match costs more than this are treated as lead-in/lead-out."""
+    frames whose best match costs more than this are treated as lead-in/lead-out. ``ref_skip_cost``
+    likewise lets the start and end of the reference stay unmatched (a recording of part of the
+    routine); None = the whole reference must be matched."""
     if len(R) < 2 or len(U) < 2:
         raise ValueError("Sequences too short to align")
     C = cost_matrix(R, U, scales, min_valid=min_valid)
-    D, B = _subseq_dtw(C, np.float32(step_penalty), np.float32(skip_cost))
-    tail = skip_cost * (len(U) - 1 - np.arange(len(U)))
-    j_end = int(np.argmin(D[-1] + tail))
-    ri, uj = _backtrack(B, j_end)
+    rs = NO_REF_SKIP if ref_skip_cost is None else float(ref_skip_cost)
+    D, B = _subseq_dtw(C, np.float32(step_penalty), np.float32(skip_cost), np.float32(rs))
+    N, M = C.shape
+    tail = (rs * (N - 1 - np.arange(N)))[:, None] + (skip_cost * (M - 1 - np.arange(M)))[None, :]
+    if ref_skip_cost is None:
+        tail[:-1] = np.inf                      # must end on the last reference frame
+    i_end, j_end = np.unravel_index(int(np.argmin(D + tail)), D.shape)
+    ri, uj = _backtrack(B, int(i_end), int(j_end))
     lc = C[ri, uj]
     return Alignment(ri, uj, lc, float(lc.mean()))
 
@@ -192,37 +193,49 @@ class TwoStageResult:
 def two_stage_align(F_ref: np.ndarray, F_user: np.ndarray, t_ref: np.ndarray, names: list[str],
                     scales: np.ndarray, seg_bounds: list[tuple[float, float]], swap_mode: str = "auto",
                     coarse_window_s: float = 2.0, skip_cost: float = 2.0, step_penalty: float = 0.02,
-                    swap_threshold: float = 0.95) -> TwoStageResult:
-    """``swap_mode``: auto | yes | no. ``seg_bounds`` are reference (start, end) seconds."""
+                    swap_threshold: float = 0.95, ref_skip_cost: float | None = None) -> TwoStageResult:
+    """``swap_mode``: auto | yes | no. ``seg_bounds`` are reference (start, end) seconds.
+    ``ref_skip_cost``: the practitioner may have recorded only part of the routine; reference sections
+    left unmatched at either end are reported as missing (``segment_lr[k]["missing"]``)."""
     from .features import lr_swap_features
 
     dt = float(np.median(np.diff(t_ref)))
     win = max(1, int(round(coarse_window_s / dt)))
     G_r, g_sc = mirror_invariant(F_ref, names, scales)
     G_u, _ = mirror_invariant(F_user, names, scales)
-    coarse = align(smooth_nan(G_r, win), smooth_nan(G_u, win), g_sc, step_penalty, skip_cost)
+    coarse = align(smooth_nan(G_r, win), smooth_nan(G_u, win), g_sc, step_penalty, skip_cost,
+                   ref_skip_cost=ref_skip_cost)
 
     first_user = np.full(len(F_ref), -1, dtype=np.int64)
     for i, j in zip(coarse.ref_idx[::-1], coarse.user_idx[::-1]):
         first_user[i] = j
-    # reference index ranges per segment, and the matching user boundaries
-    r_bounds, u_bounds = [], []
+    # reference index ranges per segment, and the matching user boundaries; a section is present when
+    # at least half of it lies on the coarse path (with free reference ends the rest are not recorded)
+    r_bounds, starts = [], []
     for a, b in seg_bounds:
         idx = np.flatnonzero((t_ref >= a) & (t_ref < b))
         if len(idx) < 2:
             continue
         r_bounds.append((idx[0], idx[-1] + 1))
-        u_bounds.append(first_user[idx[0]])
+        on = idx[first_user[idx] >= 0]
+        starts.append(int(first_user[on[0]]) if len(on) >= 0.5 * len(idx) else None)
     u_end = int(coarse.user_idx[-1]) + 1
-    u_bounds = np.maximum.accumulate(np.asarray(u_bounds + [u_end]))
+    spans, nxt = [], u_end
+    for st in starts[::-1]:                          # each present section ends where the next present one starts
+        spans.append((st, max(st, nxt)) if st is not None else (nxt, nxt))
+        nxt = st if st is not None else nxt
+    spans = spans[::-1]
 
     F_user_sw = lr_swap_features(F_user, names)
     seg_lr, parts = [], {False: [], True: []}
     totals = {False: 0.0, True: 0.0}
     for k, (r0, r1) in enumerate(r_bounds):
-        u0, u1 = int(u_bounds[k]), int(max(u_bounds[k + 1], u_bounds[k] + 2))
-        u1 = min(u1, len(F_user))
+        u0, u1 = int(spans[k][0]), min(int(spans[k][1]), len(F_user))
         ev = {"ref": [int(r0), int(r1)], "user": [u0, u1]}
+        if u1 - u0 < 2:          # not in the practitioner video (a partial recording)
+            ev.update(cost=float("inf"), cost_swap=float("inf"), missing=True)
+            seg_lr.append(ev)
+            continue
         for sw, U in ((False, F_user), (True, F_user_sw)):
             al = align(F_ref[r0:r1], U[u0:u1], scales, step_penalty, skip_cost=1e4)   # fixed ends
             parts[sw].append((al.ref_idx + r0, al.user_idx + u0, al.local_cost))
@@ -231,6 +244,8 @@ def two_stage_align(F_ref: np.ndarray, F_user: np.ndarray, t_ref: np.ndarray, na
         seg_lr.append(ev)
     ratio = totals[True] / totals[False] if totals[False] > 0 else 1.0
     swap = {"yes": True, "no": False}.get(swap_mode, ratio < swap_threshold)
+    if not parts[swap]:
+        raise ValueError("Sequences too short to align")
     ri = np.concatenate([p[0] for p in parts[swap]])
     uj = np.concatenate([p[1] for p in parts[swap]])
     lc = np.concatenate([p[2] for p in parts[swap]])

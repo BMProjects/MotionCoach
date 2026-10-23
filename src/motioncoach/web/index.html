@@ -10,8 +10,9 @@
 <body>
 <header class="topbar">
   <a href="#/" class="brand">动作对比分析 <span class="tag">MVP · 八段锦</span></a>
-  <nav><a href="#/" data-nav="new">新建分析</a><a href="#/bench" data-nav="bench" class="dev-only hidden">算法对比（开发者）</a></nav>
+  <nav><a href="#/" data-nav="new">新建分析</a><a href="#/jobs" data-nav="jobs">分析记录</a><a href="#/bench" data-nav="bench" class="dev-only hidden">算法对比（开发者）</a></nav>
   <span class="topnote">研究测试工具 · 结果仅供算法验证</span>
+  <div class="tasks"><button id="tasks-chip" class="tasks-chip hidden" aria-haspopup="true"></button><div id="tasks-panel" class="tasks-panel hidden"></div></div>
 </header>
 
 <main id="app">
@@ -26,6 +27,7 @@
           <input type="file" id="file" accept="video/*">
           <span id="drop-text">点击选择或拖入视频文件</span>
         </label>
+        <p id="file-hint" class="msg hint hidden"></p>
         <details class="dev">
           <summary>或使用 assets/ 中已有视频（开发测试）</summary>
           <div id="local-list" class="local-list"></div>
@@ -48,13 +50,20 @@
           <label><input type="radio" name="mirror" value="no"> 保存的视频不是镜像（后置摄像头 / 他人拍摄）</label>
         </div>
         <label class="check"><input type="checkbox" id="mirror-practice"> 练习者是对着示范“照镜子”做的（左右相反）</label>
+        <label class="height-field">本人身高（可选） <input id="height-cm" type="number" min="80" max="230" step="1" placeholder="例如 170"> cm
+          <small>填写后长度另显示估算的厘米值；不填则只按身体比例显示</small></label>
+        <h2 class="mt"><span class="step">5</span>画面中的人数</h2>
+        <div class="choice compact">
+          <label><input type="radio" name="people" value="single" checked> 一位练习者</label>
+          <label><input type="radio" name="people" value="group"> 多人（集体练习、课堂）：逐人跟踪与评价，并给出同步与整齐度；旁观者会被自动排除</label>
+        </div>
         <details class="dev dev-only hidden">
           <summary>开发者：姿态算法与采样</summary>
           <label>姿态算法 <select id="backend"></select></label>
           <p class="msg" id="backend-note"></p>
           <label>分析帧率 <select id="fps"><option>5</option><option selected>10</option><option>15</option></select> fps</label>
         </details>
-        <p class="msg">姿态识别：MediaPipe Pose Landmarker（默认，优先 GPU）。</p>
+        <p class="msg" id="backend-default"></p>
         <button id="start" class="primary" disabled>开始分析</button>
         <p id="start-msg" class="msg"></p>
       </div>
@@ -63,26 +72,17 @@
       <div class="card tips">
         <h2>拍摄要点</h2>
         <ul>
-          <li>与示范<strong>同一视角</strong>（本示范为正面），手机固定、竖屏。</li>
+          <li>与示范<strong>同一视角</strong>（本示范为正面），手机固定在三脚架上、竖屏。</li>
+          <li>相机设为 <strong>1080p、30 fps</strong>，关闭 HDR 视频 / 10 位 HDR，三脚架上关闭防抖；4K、60 fps 不会提高结果，只会让上传变慢。</li>
           <li><strong>全身入画</strong>，头顶与脚下留空；人物约占画高一半以上。</li>
           <li>光线均匀；宽松衣物会降低关节定位精度。画面中只有练习者一人。</li>
           <li>两手攀足等前屈动作在正面视角下不可测，需侧面补拍（后续版本）。</li>
         </ul>
       </div>
       <div class="card">
-        <h2>最近的分析</h2>
+        <h2>最近的分析 <a class="more" href="#/jobs">查看全部分析记录 →</a></h2>
         <div id="job-list" class="job-list"></div>
       </div>
-    </div>
-  </section>
-
-  <!-- ===================== progress ===================== -->
-  <section id="view-progress" class="view hidden">
-    <div class="card narrow">
-      <h2>分析中…</h2>
-      <div class="bar"><div id="bar-fill"></div></div>
-      <ol id="stages" class="stages"></ol>
-      <p class="msg" id="progress-msg">只有选中的区间做逐帧分析；姿态结果会缓存，换区间或重复分析会很快。</p>
     </div>
   </section>
 
@@ -91,12 +91,18 @@
     <!-- 0 · header: what was analysed, with caveats always visible -->
     <div class="r-head">
       <div class="r-title">
+        <a class="back" id="r-back" href="#/jobs">← 分析记录</a>
         <h1 id="r-title">分析报告</h1>
+        <div id="r-person" class="r-person hidden"></div>
         <p id="r-scope" class="sub"></p>
       </div>
-      <div id="r-badges" class="badges"></div>
+      <div class="r-side">
+        <div id="r-badges" class="badges"></div>
+        <div class="seg-toggle" id="r-mode" role="tablist" aria-label="显示方式"><button data-m="simple" class="on">简洁</button><button data-m="detail">详细</button></div>
+      </div>
     </div>
     <div id="r-notes" class="notes hidden"></div>
+    <div id="r-correct" class="card fix hidden"></div>
 
     <!-- 1 · what to look at first -->
     <div class="findings-row">
@@ -111,7 +117,7 @@
         <button id="step-back" title="后退 0.5 秒（←）">⟨</button>
         <button id="step-fwd" title="前进 0.5 秒（→）">⟩</button>
         <label>速度 <select id="rate"><option>0.25</option><option>0.5</option><option selected>1</option></select></label>
-        <label>播放跟随 <select id="master"><option value="ref" selected>标准示范</option><option value="user">练习者</option></select></label>
+        <label>播放跟随 <select id="master"><option value="user" selected>练习者（品红）</option><option value="ref">标准示范（蓝）</option></select></label>
         <span class="tl-sep"></span>
         <span class="zoom-group">缩放
           <button id="z-all" title="显示全部分析区间">全部</button>
@@ -122,7 +128,7 @@
         <span id="clock" class="clock"></span>
       </div>
       <div class="tl-wrap"><canvas id="tl" class="tl"></canvas><div id="tl-tip" class="tip hidden"></div></div>
-      <p class="tl-help">拖动时间轴或点击任意位置定位，下方画面、曲线、骨架同步更新。点击动作段选中，双击放大；点击 ①②③ 跳到重点差异。滚轮 + Ctrl 缩放，滚轮 + Shift 平移。</p>
+      <p class="tl-help">拖动时间轴或点击任意位置定位，下方画面、曲线、骨架同步更新。点击动作段选中，双击放大；短竖条 = 每一次重复的动作区间，色带连接相互对应的重复（深色为默认对应）。默认“以练习者为准”播放：练习者的每一次重复都回放对应的标准示范，两次重复之间正常速度过渡；点击练习者轨道可直接跳到某一次重复；点击 ①②③ 跳到重点差异。滚轮 + Ctrl 缩放，滚轮 + Shift 平移。</p>
     </section>
 
     <!-- 3 · layers driven by the playhead -->
@@ -132,24 +138,24 @@
         <span class="layer-tools">
           <label class="check"><input type="checkbox" id="ly-skel" checked> 骨架</label>
           <label class="check"><input type="checkbox" id="ly-joint" checked> 当前指标的关节与角度</label>
-          <label class="check"><input type="checkbox" id="ly-arrow" checked> 偏差箭头</label>
+          <label class="check" title="两副骨架对应关节之间的位置差，是测量结果，不是调整方向"><input type="checkbox" id="ly-arrow" checked> 测得的位置差</label>
         </span>
       </header>
       <div class="layer-body viewer">
-        <figure class="pane"><figcaption>练习者 <span id="cap-user" class="cap-time"></span></figcaption>
-          <div class="vbox"><video id="v-user" playsinline preload="auto"></video><canvas id="c-user"></canvas><div class="outside hidden" id="out-user">此时段未分析</div></div></figure>
-        <figure class="pane"><figcaption>标准示范 <span id="cap-ref" class="cap-time"></span></figcaption>
+        <figure class="pane ref"><figcaption><span class="who ref">标准示范</span> <span id="cap-ref" class="cap-time"></span></figcaption>
           <div class="vbox"><video id="v-ref" playsinline preload="auto" muted></video><canvas id="c-ref"></canvas><div class="outside hidden" id="out-ref">此时段未分析</div></div></figure>
-        <figure class="pane"><figcaption>同体型骨架对照
+        <figure class="pane norm"><figcaption>同体型骨架对照
             <span class="seg-toggle" id="norm-mode"><button data-m="now" class="on">当前时刻</button><button data-m="seg">本段定势平均</button></span></figcaption>
           <div class="vbox light"><canvas id="norm"></canvas><div class="outside hidden" id="out-norm">此时段未分析</div></div>
           <p class="pane-note" id="norm-note"></p></figure>
+        <figure class="pane user"><figcaption><span class="who user">练习者</span> <span id="cap-user" class="cap-time"></span></figcaption>
+          <div class="vbox"><video id="v-user" playsinline preload="auto"></video><canvas id="c-user"></canvas><div class="outside hidden" id="out-user">此时段未分析</div></div></figure>
       </div>
     </section>
 
     <section class="layer" id="layer-curve">
       <header class="layer-head"><button class="layer-toggle" aria-expanded="true">▾</button><h2>曲线层</h2>
-        <span class="layer-sub">灰线 = 标准；蓝线 = 练习者（按动作对应时刻对齐）；浅色带 = 允许偏差；斜纹 = 此视角不可测</span></header>
+        <span class="layer-sub idlegend"><span class="who ref">标准示范</span><span class="who user">练习者</span> 练习者曲线 = 正在播放的那一次重复（以标准为准播放时为默认对应的一次），按动作对应时刻对齐；浅灰带 = 允许偏差；斜纹 = 此视角不可测</span></header>
       <div class="layer-body">
         <div id="feat-chips" class="chips"></div>
         <div class="curve-wrap"><canvas id="curve" class="curve"></canvas><div id="curve-tip" class="tip hidden"></div></div>
@@ -179,6 +185,91 @@
     </section>
   </section>
 
+  <!-- ===================== group overview (several people) ===================== -->
+  <section id="view-group" class="view hidden">
+    <div class="r-head">
+      <div class="r-title">
+        <a class="back" href="#/jobs">← 分析记录</a>
+        <h1 id="g-title">集体分析</h1>
+        <p id="g-sub" class="sub"></p>
+      </div>
+      <div id="g-badges" class="badges"></div>
+    </div>
+    <div id="g-notes" class="notes hidden"></div>
+
+    <!-- 1 · what to look at first -->
+    <div class="findings-row">
+      <div id="g-findings" class="findings"></div>
+      <div id="g-summary" class="r-summary"></div>
+    </div>
+
+    <!-- 2 · the timeline drives everything below -->
+    <section class="tl-panel" aria-label="集体时间轴">
+      <div class="tl-controls">
+        <button id="g-play" class="primary">▶ 播放</button>
+        <label>速度 <select id="g-speed"><option value="0.5">0.5</option><option value="1" selected>1</option><option value="2">2</option></select></label>
+        <span id="g-time" class="hint mono">0:00</span>
+        <label class="check"><input type="checkbox" id="g-show-out"> 显示排除的人（红框）</label>
+        <label class="check"><input type="checkbox" id="g-tl-rows"> 展开每人偏离（<span id="g-tl-rows-n">0</span> 人）</label>
+      </div>
+      <div class="g-tl" id="g-tl"><canvas id="g-tl-canvas"></canvas><div class="tip hidden" id="g-tl-tip"></div></div>
+      <p class="hint">拖动或点击时间轴预览任意时刻；曲线为集体整齐度，柱为同步离散。勾选“展开每人偏离”后，每行显示一位练习者此刻与集体中位的偏离（颜色越深偏离越大）。</p>
+    </section>
+
+    <!-- 3 · video and the current moment -->
+    <div class="g-top">
+      <div class="card g-stage-card">
+        <div class="g-stage" id="g-stage"><video id="g-video" playsinline preload="auto" muted></video><canvas id="g-canvas"></canvas></div>
+        <p class="hint">编号框按识别顺序着色（越靠前越深的绿色）；点击练习者的框打开其详细对比。</p>
+      </div>
+      <div class="card g-now" id="g-now"></div>
+    </div>
+
+    <!-- 4 · details on demand -->
+    <details class="card g-more" id="g-sections-card">
+      <summary><h2>动作段（统一时间轴）与修正</h2></summary>
+      <div id="g-sections"></div>
+    </details>
+    <details class="card g-more" open>
+      <summary><h2>人员与身份核对</h2></summary>
+      <div class="seg-toggle g-tabs" role="tablist">
+        <button data-tab="people" class="on" role="tab">人员</button>
+        <button data-tab="ids" role="tab">身份核对 <span id="g-ids-flag"></span></button>
+      </div>
+      <div id="g-people" class="g-people g-people-grid"></div>
+      <div id="g-ids" class="g-ids hidden"></div>
+    </details>
+    <details class="card g-more">
+      <summary><h2>人员 × 动作段：重点指标达标情况</h2></summary>
+      <div class="g-scroll"><table id="g-matrix" class="heat g-matrix"></table></div>
+      <div id="g-matrix-legend" class="legend"></div>
+    </details>
+    <details class="card g-more">
+      <summary><h2>同步曲线与站位</h2></summary>
+      <div class="grid2">
+        <div><h3>同步：相对集体的时间差</h3><p class="hint">视频中同一时刻，每位练习者的动作比其他人早（负）或晚（正）几秒；按 8 秒滑动窗口比较动作信号，动作不清晰的时段不画。</p><div id="g-sync" class="g-chart"></div></div>
+        <div><h3>站位示意（俯视）</h3><p class="hint">按头部尺度与脚点着地位置估算，仅表示大致前后左右关系；镜头在下方。</p><div id="g-layout" class="g-chart"></div></div>
+      </div>
+    </details>
+    <details class="card g-more">
+      <summary><h2>整齐度：动作段 × 指标</h2></summary>
+      <p class="hint">同一标准时刻各练习者指标的标准差，以允许偏差为单位；颜色越深越不整齐，空白为少于两人可比。</p>
+      <div class="g-scroll"><table id="g-cons" class="heat g-cons"></table></div>
+    </details>
+  </section>
+
+  <!-- ===================== history ===================== -->
+  <section id="view-jobs" class="view hidden">
+    <div class="jobs-head">
+      <div><h1>分析记录</h1><p class="sub">本服务器上的全部分析，最新的在前。点击一行打开报告；新分析在后台进行，进度显示在这里和右上角，期间可以继续查看其它报告。</p></div>
+      <div class="jobs-tools">
+        <input id="jobs-q" type="search" placeholder="搜索视频名、动作段…" aria-label="搜索分析记录">
+        <a class="button primary" href="#/">＋ 新建分析</a>
+      </div>
+    </div>
+    <div id="jobs-table" class="jobs-table"></div>
+  </section>
+
   <!-- ===================== bench (developer) ===================== -->
   <section id="view-bench" class="view hidden">
     <div class="card">
@@ -190,5 +281,6 @@
   </section>
 </main>
 <script src="/static/app.js"></script>
+<script src="/static/group.js"></script>
 </body>
 </html>

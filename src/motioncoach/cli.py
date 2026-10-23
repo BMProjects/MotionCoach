@@ -28,8 +28,14 @@ def _analyze(args: argparse.Namespace) -> int:
             last[stage] = frac
             print(f"  {stage:<11s} {frac * 100:5.1f}%", flush=True)
 
+    from .engine.errors import NoPersonError
+
     opts = _options(args)
-    rep = run_analysis(ref, user, out, settings.DATA_DIR, settings.MODELS_DIR, opts, progress)
+    try:
+        rep = run_analysis(ref, user, out, settings.DATA_DIR, settings.MODELS_DIR, opts, progress)
+    except NoPersonError as exc:   # an outcome, not a crash
+        print(f"\n无法分析：{exc}", file=sys.stderr)
+        return 3
     s = rep["summary"]
     sc = rep["scope"]
     print(f"\nreport: {out / 'report.json'}  ({rep['elapsed_s']} s; {rep['timings_s']})")
@@ -77,6 +83,33 @@ def _bench(args: argparse.Namespace) -> int:
     return 0
 
 
+def _group(args: argparse.Namespace) -> int:
+    from .apps.assets import get_reference
+    from .apps.group import run_group
+    from .engine.group import GroupParams
+
+    ref = get_reference(args.reference, Path(args.references_dir), settings.ROOT)
+    out = Path(args.out) if args.out else settings.DATA_DIR / "group" / time.strftime("%Y%m%d-%H%M%S")
+    ids = lambda s: tuple(int(x) for x in s.split(",") if x != "") if s else ()   # noqa: E731
+    params = GroupParams(baseline_s=args.baseline, max_persons=args.max_persons, max_depth_ratio=args.max_depth_ratio,
+                         include=ids(args.include), exclude=ids(args.exclude))
+    from .apps.analysis import AnalysisOptions
+    opts = AnalysisOptions(sample_fps=args.fps, backend=args.backend, user_mirrored=args.mirrored)
+    g = run_group(ref, Path(args.video), out, settings.DATA_DIR, settings.MODELS_DIR, opts, params,
+                  progress=lambda s, f: None)
+    print(f"{len(g['identities'])} 个身份，练习者 {sum(i['performer'] for i in g['identities'])} 人 → {out / 'group.json'}")
+    for i in g["identities"]:
+        sc = i["screening"]
+        print(f"  #{i['id']:<2d} {'练习者' if i['performer'] else '排除  '}  身高 {i['stature_px']:6.0f}px  "
+              f"x {i['layout'].get('x_m')} m  z {i['layout'].get('z_m')} m  身高约 {i['layout'].get('height_m')} m  "
+              f"出现 {sc['presence'] * 100:3.0f}%  "
+              f"运动 {sc['motion_rel']}  相似 {sc['similarity']}  {'；'.join(sc['reasons'])}")
+    for p in g["persons"]:
+        sy = g["group"].get("sync", {}).get(p["id"], {})
+        print(f"  #{p['id']:<2d} {p.get('pass_text') or p.get('error')}  同步偏移中位 {sy.get('offset_median_s')} s")
+    return 0
+
+
 def _backends(args: argparse.Namespace) -> int:
     from .perception.registry import list_backends
 
@@ -87,6 +120,36 @@ def _backends(args: argparse.Namespace) -> int:
         print(f"      GPU: {b['gpu']}")
         if b["reason"]:
             print(f"      {b['reason']}")
+    if args.probe:   # run every installed backend on a few seconds: the device actually used and its speed
+        from .media.extract import prepared_video
+        from .perception.base import run_on_video
+        from .perception.registry import get_backend
+
+        _, proxy = prepared_video(Path(args.probe), settings.DATA_DIR)
+        print(f"\n实测（{Path(args.probe).name} 前 {args.seconds:g} 秒，10 fps）")
+        for b in list_backends():
+            if not b["available"]:
+                continue
+            try:
+                be = get_backend(b["name"], settings.MODELS_DIR)
+                seq = run_on_video(be, proxy, 10.0, 0.0, args.seconds)
+                det = float(seq.detected.mean())
+                print(f"  {b['name']:<16s} device={seq.meta.get('device')}  {seq.meta.get('ms_per_frame', 0):6.1f} ms/帧  "
+                      f"检出 {det:.0%}  {seq.meta.get('device_note', '')}")
+            except Exception as exc:   # report and continue with the next backend
+                print(f"  {b['name']:<16s} 失败：{type(exc).__name__}: {str(exc)[:160]}")
+    return 0
+
+
+def _refpack(args: argparse.Namespace) -> int:
+    from .apps.assets import get_reference
+    from .apps.refpack import build_refpack
+
+    ref = get_reference(args.reference, Path(args.references_dir), settings.ROOT)
+    out = Path(args.out) if args.out else settings.DATA_DIR / "refpacks" / f"{ref.id}__{args.backend}"
+    m = build_refpack(ref, out, settings.DATA_DIR, settings.MODELS_DIR, args.backend, args.fps, args.with_video)
+    size = sum(f["bytes"] for f in m["files"].values())
+    print(f"{out}  ({m['frames']} frames, {len(m['segments'])} segments, {size / 1e6:.2f} MB, version {m['version']})")
     return 0
 
 
@@ -129,8 +192,32 @@ def main(argv: list[str] | None = None) -> int:
         sp.add_argument("--to", dest="seg_to", help="last segment id (segments/manual)")
         sp.add_argument("--user-start", type=float, help="manual: start in the user video (s)")
         sp.add_argument("--user-end", type=float, help="manual: end in the user video (s)")
+    g = sub.add_parser("group", help="multi-person video: identities, performer screening, per-person reports, group metrics")
+    g.add_argument("--reference", required=True)
+    g.add_argument("--references-dir", default=str(settings.REFERENCES_DIR))
+    g.add_argument("--video", required=True)
+    g.add_argument("--backend", default="rtmw-l", help="a multi-person backend (rtmlib or YOLO)")
+    g.add_argument("--fps", type=float, default=10.0)
+    g.add_argument("--mirrored", default="auto", choices=["auto", "yes", "no"])
+    g.add_argument("--baseline", type=float, default=10.0, help="opening seconds that set up the identities")
+    g.add_argument("--max-persons", type=int, default=12)
+    g.add_argument("--max-depth-ratio", type=float, default=1.8, help="farther than this x the group's depth = behind the group")
+    g.add_argument("--include", default="", help="identity ids forced to be performers, e.g. 3,5")
+    g.add_argument("--exclude", default="", help="identity ids forced out")
+    g.add_argument("--out")
+    g.set_defaults(func=_group)
     lb = sub.add_parser("backends", help="list pose backends and availability")
+    lb.add_argument("--probe", metavar="VIDEO", help="also run every installed backend on the first seconds of VIDEO")
+    lb.add_argument("--seconds", type=float, default=5.0)
     lb.set_defaults(func=_backends)
+    rp = sub.add_parser("refpack", help="build a reference package (role A -> mobile clients)")
+    rp.add_argument("--reference", required=True)
+    rp.add_argument("--references-dir", default=str(settings.REFERENCES_DIR))
+    rp.add_argument("--backend", default="mediapipe-full", help="pose model the client will use")
+    rp.add_argument("--fps", type=float, default=10.0)
+    rp.add_argument("--with-video", action="store_true", help="include the reference display proxy")
+    rp.add_argument("--out")
+    rp.set_defaults(func=_refpack)
     s = sub.add_parser("serve", help="start the local web service")
     s.add_argument("--host", default="127.0.0.1")
     s.add_argument("--port", type=int, default=8765)

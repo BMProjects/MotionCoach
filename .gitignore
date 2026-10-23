@@ -31,3 +31,8 @@ models/
 assets/Weixin*
 assets/*.mp4
 !assets/demo*.mp4
+
+# memo images with identifiable people (screenshots, diagnosis frames): local only
+docs/memo_assets/
+# the expert memo itself is local communication material (it embeds the images above)
+docs/EXPERT_MEMO_PHASE1.html

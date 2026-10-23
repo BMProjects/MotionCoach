@@ -1,7 +1,8 @@
 """Registry of pose backends.
 
-Production default is ``mediapipe-full`` only (``DEFAULT_BACKEND``); every other entry exists for
-developer-side comparison (``motioncoach bench``) and is hidden from the end-user UI.
+``DEFAULT_BACKEND`` is the one model end users get: ``mediapipe-full`` unless the deployment sets
+``MOTIONCOACH_BACKEND`` (the GPU analysis server uses ``rtmw-x``, the most accurate downstream in
+docs/POSE_BENCH.md). Every other entry exists for developer-side comparison (``motioncoach bench``).
 ``status="candidate"`` marks researched 3D methods that are catalogued with their requirements
 but not runnable until their gated weights / code are installed.
 """
@@ -13,7 +14,13 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-DEFAULT_BACKEND = "mediapipe-full"
+DEFAULT_BACKEND = os.environ.get("MOTIONCOACH_BACKEND", "mediapipe-full")
+# Section bounds and left/right come from the coarse alignment, which may use another model than the
+# fine comparison (empty = same model). On the GPU server: mediapipe-full, whose coarse bounds are the most
+# accurate of the candidates there (docs/POSE_BENCH.md, docs/ITERATION_LOG.md I9).
+BOUNDS_BACKEND = os.environ.get("MOTIONCOACH_BOUNDS_BACKEND", "") or None
+# Multi-person videos need a model that reports every person with a box (MediaPipe does not).
+GROUP_BACKEND = os.environ.get("MOTIONCOACH_GROUP_BACKEND", "rtmw-l")
 LOCATE_BACKEND = "mediapipe-lite"
 
 
@@ -40,7 +47,7 @@ SPECS: dict[str, BackendSpec] = {s.name: s for s in [
     BackendSpec("mediapipe-lite", "mediapipe", "MediaPipe Pose Landmarker lite", 33, ("mediapipe",), "Apache-2.0",
                 "区间定位粗扫用", dims="2D+3D", gpu=_MP_GPU),
     BackendSpec("mediapipe-full", "mediapipe", "MediaPipe Pose Landmarker full", 33, ("mediapipe",), "Apache-2.0",
-                "默认算法；含足跟/脚尖；另输出髋部为原点的 3D 估计（米）", dims="2D+3D", gpu=_MP_GPU),
+                "轻量默认；含足跟/脚尖；另输出髋部为原点的 3D 估计（米）", dims="2D+3D", gpu=_MP_GPU),
     BackendSpec("mediapipe-heavy", "mediapipe", "MediaPipe Pose Landmarker heavy", 33, ("mediapipe",), "Apache-2.0",
                 dims="2D+3D", gpu=_MP_GPU),
     BackendSpec("rtmpose-m", "rtmlib", "RTMPose-m + YOLOX-m (COCO-17)", 17, ("rtmlib", "onnxruntime"), "Apache-2.0",
@@ -67,6 +74,11 @@ SPECS: dict[str, BackendSpec] = {s.name: s for s in [
                 links=("https://github.com/facebookresearch/sam-3d-body",
                        "https://github.com/facebookresearch/sam-3d-body/blob/main/INSTALL.md")),
 ]}
+
+for _env, _name in (("MOTIONCOACH_BACKEND", DEFAULT_BACKEND), ("MOTIONCOACH_BOUNDS_BACKEND", BOUNDS_BACKEND),
+                    ("MOTIONCOACH_GROUP_BACKEND", GROUP_BACKEND)):
+    if _name is not None and _name not in SPECS:
+        raise ValueError(f"{_env}={_name!r} is not a known backend: {', '.join(SPECS)}")
 
 _CANDIDATE_REQUIREMENTS = {
     "gvhmr": ("GVHMR_ROOT", "GVHMR 代码库与 inputs/checkpoints（gvhmr_siga24_release.ckpt、vitpose、hmr2、yolo）及 "

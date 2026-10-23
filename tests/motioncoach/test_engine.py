@@ -6,6 +6,8 @@ import pytest
 from motioncoach.engine.align import align
 from motioncoach.engine.compare import Segment, compare_segments
 from motioncoach.engine.features import FEATURES, compute_features, lr_swap_features
+from motioncoach.engine.reps import compare_by_reps
+from motioncoach.engine.templates import compare_by_templates
 from motioncoach.engine.sequence import PoseSequence, clean
 from motioncoach.engine.skeleton import MEDIAPIPE33
 
@@ -137,6 +139,60 @@ def test_compare_reports_signed_delta_and_timing():
     assert out["tempo_ratio"] == pytest.approx(2.0, rel=0.1)
 
 
+def test_reps_pair_one_demo_with_several_practice_cycles():
+    """1 reference cycle vs 3 slower practitioner cycles: each cycle is paired interval-to-interval, not
+    piled onto single reference frames, and the key-moment difference is measured at the same phase."""
+    def cycles(n_cycles, period_s, rest_s, offset=0.0):
+        t, ys = [], []
+        T = n_cycles * (period_s + rest_s) + rest_s
+        tt = np.arange(0, T, 0.1)
+        y = np.full(len(tt), 20.0)
+        for k in range(n_cycles):
+            a = rest_s + k * (period_s + rest_s)
+            m = (tt >= a) & (tt < a + period_s)
+            y[m] = 20 + (140 + offset) * np.sin(np.pi * (tt[m] - a) / period_s) ** 2
+        return tt, y
+    t_r, yr = cycles(1, 6.0, 2.0)
+    t_u, yu = cycles(3, 9.0, 3.0, offset=-20.0)            # practitioner raises 20 deg less, 1.5x slower
+    names = ["l_shoulder", "r_shoulder"]
+    F_r, F_u = np.c_[yr, yr], np.c_[yu, yu]
+    scales = np.array([15.0, 15.0])
+    out = compare_by_reps(t_r, F_r, t_u, F_u, [Segment("a", "A", 0, t_r[-1] + 0.1)], [(0, len(t_u))],
+                          names, scales, neutral=np.array([20.0, 20.0]))
+    seg = out["segments"][0]
+    assert (seg["reps"]["count_ref"], seg["reps"]["count_user"], seg["reps"]["count_paired"]) == (1, 3, 3)
+    assert all(1.2 < u["duration_ratio"] < 1.8 for u in seg["reps"]["user"])
+    assert seg["features"]["l_shoulder"]["hold_mean_delta"] == pytest.approx(-20, abs=3)
+    assert len(out["user_map"]) == 3
+
+
+def test_templates_find_every_practice_cycle():
+    """Annotated single reference cycle vs 3 slower practitioner cycles: each is found and compared on its hold."""
+    def cycles(n_cycles, period_s, rest_s, offset=0.0):
+        tt = np.arange(0, n_cycles * (period_s + rest_s) + rest_s, 0.1)
+        y = np.full(len(tt), 20.0)
+        for k in range(n_cycles):
+            a = rest_s + k * (period_s + rest_s)
+            m = (tt >= a) & (tt < a + period_s)
+            y[m] = 20 + (140 + offset) * np.sin(np.pi * (tt[m] - a) / period_s) ** 2
+        return tt, y
+    t_r, yr = cycles(1, 6.0, 2.0)
+    t_u, yu = cycles(3, 9.0, 3.0, offset=-20.0)            # 20 deg lower at the top, 1.5x slower
+    names = ["l_shoulder", "r_shoulder"]
+    out = compare_by_templates(t_r, np.c_[yr, yr], t_u, np.c_[yu, yu], [Segment("a", "A", 0, t_r[-1] + 0.1)],
+                               [(0, len(t_u))], names, np.array([15.0, 15.0]), ref_reps={"a": [[2.0, 8.0, 4.5, 5.5]]})
+    reps = out["segments"][0]["reps"]
+    assert (reps["count_ref"], reps["count_user"]) == (1, 3)
+    starts = sorted(u["start"] for u in reps["user"])
+    assert all(abs(s - e) < 1.5 for s, e in zip(starts, [3.0, 15.0, 27.0]))
+    assert out["segments"][0]["features"]["l_shoulder"]["hold_mean_delta"] == pytest.approx(-20, abs=3)
+    pb = out["playback"]
+    assert len(pb["ref_t_for_user"]) == len(t_u) and len(pb["user_t_for_ref"]) == len(t_r)
+    # practitioner-led playback loops the template: the mapped reference hold appears once per repetition
+    shown = np.array(pb["ref_t_for_user"])
+    assert sum(1 for a, b in zip(shown[:-1], shown[1:]) if b < a - 1.0) == 2
+
+
 def test_timestamps_must_increase():
     with pytest.raises(ValueError):
         PoseSequence(t=np.array([0.0, 0.0]), xy=np.zeros((2, J, 2), np.float32),
@@ -176,3 +232,54 @@ def test_patterns_separate_near_reference_and_deviation_groups():
     assert (lab[:300] == 0).mean() > 0.95                      # within tolerance -> class 0
     assert out["k"] == 2
     assert len(set(lab[300:380])) == 1 and len(set(lab[380:])) == 1 and lab[300] != lab[380]
+
+
+def test_scale_from_upright_stature():
+    """Eyes-to-ankles stature with Drillis & Contini proportions -> cm per pixel; torso cross-check."""
+    from motioncoach.engine.scale import ANKLE_H, EYE_H, HIP_H, SHOULDER_H, estimate_scale, to_cm
+    from motioncoach.engine.skeleton import MEDIAPIPE33 as SK
+    H_px, T = 800.0, 30
+    floor, cx = 900.0, 300.0
+    y = lambda frac: floor - frac * H_px   # noqa: E731
+    pts = {"left_eye": (cx + 10, y(EYE_H)), "right_eye": (cx - 10, y(EYE_H)),
+           "left_shoulder": (cx + 60, y(SHOULDER_H)), "right_shoulder": (cx - 60, y(SHOULDER_H)),
+           "left_hip": (cx + 40, y(HIP_H)), "right_hip": (cx - 40, y(HIP_H)),
+           "left_knee": (cx + 40, y(0.285)), "right_knee": (cx - 40, y(0.285)),
+           "left_ankle": (cx + 40, y(ANKLE_H)), "right_ankle": (cx - 40, y(ANKLE_H))}
+    xy = np.full((T, len(SK.joints), 2), np.nan, np.float32)
+    conf = np.zeros((T, len(SK.joints)), np.float32)
+    for j, p in pts.items():
+        xy[:, SK.index[j]] = p
+        conf[:, SK.index[j]] = 0.9
+    seq = PoseSequence(t=np.arange(T) / 10.0, xy=xy, conf=conf, frame_size=(600, 1000))
+    torso_px = (SHOULDER_H - HIP_H) * H_px
+    sc = estimate_scale(seq, torso_px, height_cm=170.0)
+    assert sc["reliable"] and sc["cm_per_px"] == pytest.approx(170.0 / H_px, rel=1e-3)
+    assert sc["torso_cm"] == pytest.approx(0.288 * 170.0, rel=1e-3)
+    assert to_cm("stance_width", 0.5, sc) == pytest.approx(0.5 * 0.288 * 170.0, rel=1e-3)
+    assert to_cm("l_elbow", 10.0, sc) is None
+    xy[:, SK.index["left_hip"], 1] -= 200      # torso no longer matches stature -> unreliable, no cm
+    xy[:, SK.index["right_hip"], 1] -= 200
+    bad = estimate_scale(PoseSequence(t=seq.t, xy=xy, conf=conf, frame_size=(600, 1000)), torso_px)
+    assert not bad["reliable"] and to_cm("stance_width", 0.5, bad) is None
+
+
+def test_bone_check_keeps_a_limb_turning_into_the_image_plane():
+    """A correct limb whose projection doubles (50 -> 100 px, e.g. turning sideways) must not be deleted;
+    a joint that jumps to three times the longest projection still is."""
+    from motioncoach.engine.filters import reject_long_bones
+    T = 100
+    xy = np.full((T, J, 2), 400.0, np.float32)
+    ix = MEDIAPIPE33.index
+    for k in range(T):
+        L = 50.0 if k < 80 else 100.0
+        xy[k, ix["left_shoulder"]] = (400, 300)
+        xy[k, ix["left_elbow"]] = (400, 300 + L)
+        xy[k, ix["right_shoulder"]] = (300, 300)
+        xy[k, ix["right_elbow"]] = (300, 350)
+    xy[50, ix["left_elbow"]] = (400, 300 + 300)                   # a wrong detection: 3x the longest projection
+    seq = PoseSequence(t=np.arange(T) / 10.0, xy=xy, conf=np.ones((T, J), np.float32), frame_size=(800, 800))
+    out, n = reject_long_bones(seq)
+    el = out.joint("left_elbow")[0]
+    assert np.isfinite(el[80:]).all()                             # the turned limb is kept
+    assert not np.isfinite(el[50]).any() and n >= 1               # the jump is removed

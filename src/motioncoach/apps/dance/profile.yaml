@@ -1,0 +1,47 @@
+# 舞蹈对比（示例 / 对照数据）—— 用旧 DanceBattle 的舞蹈视频对检验同一套比较引擎。
+# status: draft：没有教练标注；片段按时间等分，重点关节对所有片段一致，仅作对照参考。
+id: dance
+title: 舞蹈对比（示例）
+status: draft
+view: front
+
+features: [l_elbow, r_elbow, l_shoulder, r_shoulder, l_hip, r_hip, l_knee, r_knee,
+           l_wrist_height, r_wrist_height, trunk_lean, head_turn, stance_width, pelvis_height]
+
+tolerances:
+  deg: {good: 15, warn: 30}
+  ratio: {good: 0.15, warn: 0.30}
+overrides:
+  trunk_lean: {good: 8, warn: 15}
+  head_turn: {good: 0.12, warn: 0.25}
+
+status_statistic: hold
+min_coverage: 0.6
+min_hold_valid: 1        # 至少 1 次与标准对应上的重复（每次都是区间对区间比较）
+neutral_from_start: false      # 舞蹈不从自然站姿开始：定势时刻改为“速度最低”的时刻
+focus_weight: 1.0
+other_weight: 0.4
+
+_focus: &focus [l_elbow, r_elbow, l_shoulder, r_shoulder, l_knee, r_knee, trunk_lean, stance_width]
+segments:
+  p1: {name: 片段 1, focus: *focus}
+  p2: {name: 片段 2, focus: *focus}
+  p3: {name: 片段 3, focus: *focus}
+  p4: {name: 片段 4, focus: *focus}
+  p5: {name: 片段 5, focus: *focus}
+  p6: {name: 片段 6, focus: *focus}
+
+quality:
+  min_detection_rate: 0.9
+  min_person_height_frac: 0.35
+  min_feet_visible: 0.6
+  min_short_side: 480
+  max_edge_rate: 0.2
+  lr_swap_ratio: 0.95
+  max_align_cost: 2.0      # 重复周期按相位对应（不做段内扭曲）的平均差异；一致偏大多为真实动作差异，>2 视为对应不可靠
+  max_coarse_align_cost: 1.6
+
+alignment:
+  coarse_window_s: 0.5         # 舞蹈节奏快：粗对齐平滑窗口更短
+  skip_cost: 2.0
+  locate_fps: 6                # 片段只有 10–17 秒，粗定位需要更密的采样
