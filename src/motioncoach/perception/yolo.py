@@ -45,5 +45,15 @@ class UltralyticsBackend:
             return None, None, None
         return kpts[i].astype(np.float32), scores[i].astype(np.float32), None
 
+    def estimate_all(self, frame_bgr: np.ndarray, ts_ms: int):
+        """Every detected person: (kpts (N,J,2), conf (N,J), boxes (N,4))."""
+        res = self._model.predict(frame_bgr, device=self.device, conf=0.25, verbose=False)
+        if not res or res[0].keypoints is None or len(res[0].keypoints) == 0:
+            return np.zeros((0, 17, 2), np.float32), np.zeros((0, 17), np.float32), np.zeros((0, 4), np.float32)
+        kp = res[0].keypoints
+        kpts = kp.xy.cpu().numpy().astype(np.float32)
+        scores = kp.conf.cpu().numpy().astype(np.float32) if kp.conf is not None else np.ones(kpts.shape[:2], np.float32)
+        return kpts, scores, res[0].boxes.xyxy.cpu().numpy().astype(np.float32)
+
     def close(self) -> None:
         self._prev_box = None

@@ -17,6 +17,46 @@ overrides:
   trunk_lean: {good: 8, warn: 15}
   head_turn: {good: 0.12, warn: 0.25} # 以肩宽为单位
 
+# 测量不确定度（docs/RECAPTURE_STUDY.md §5）：偏差须超过“允许偏差 + k × σ”才判为偏差；
+# 超出允许偏差但在测量误差之内，或误差已接近允许偏差时，判为“测量不确定”，不给修正建议。
+# σ = noise × segment_factor × backend_factor，只含测量先验；各次重复之间的差异单独报告（rules.rep_spread）。
+# 以下数值是 2026-10-21 用一段“翻拍的标准示范”（真实偏差为 0）标定的初值：
+# noise 为各指标在 RTMW-l 下的典型测量值（左右合并）；segment_factor 与 backend_factor 已截断到 [1, 3] 与 [0.8, 1.5]。
+# 单一样本标定，泛化性有限：教练或开发者可直接调整；enabled: false 回到不考虑测量误差的旧判定。
+measurement:
+  enabled: true
+  k: 1.0                 # 误差余量倍数；调大更保守（更多“测量不确定”），调小更敏感
+  resolve_ratio: 1.0     # k·σ 达到允许偏差的这个比例时，该指标在该段视为无法可靠判定
+  noise:                 # 单位同指标：角度为度，长度为躯干长，头部转动为肩宽
+    l_elbow: 2.0
+    r_elbow: 2.0
+    l_shoulder: 1.5
+    r_shoulder: 1.5
+    l_hip: 0.9
+    r_hip: 0.9
+    l_knee: 0.7
+    r_knee: 0.7
+    l_wrist_height: 0.03
+    r_wrist_height: 0.03
+    trunk_lean: 2.2
+    head_turn: 0.016
+    stance_width: 0.073
+    pelvis_height: 0.042
+  segment_factor:        # 动作越难识别越大（第五式大幅俯身摇转实测约 7.8，截断为 3）
+    s2: 1.3
+    s5: 3.0
+    s6: 1.3
+    s7: 1.6
+  backend_factor:        # 相对 RTMW-l 的测量误差
+    default: 1.0
+    mediapipe-full: 1.26
+    mediapipe-heavy: 1.26
+    mediapipe-lite: 1.5
+    rtmw-x: 0.83
+    rtmpose-m: 0.89
+    rtmo-m: 1.09
+    yolo26m-pose: 1.1
+
 status_statistic: hold   # hold = 定势（低速）时刻的中位绝对差；all = 整段中位绝对差
 min_coverage: 0.6        # 有效覆盖率低于此值 -> 不可评价，而不是 0 分
 focus_weight: 1.0
@@ -45,9 +85,12 @@ quality:
   min_short_side: 480
   max_edge_rate: 0.2
   lr_swap_ratio: 0.95      # 左右交换后（段内精对齐）代价低于原来的 95% -> 判定左右相反
-  max_align_cost: 1.2      # 段内平均对齐代价（容差单位）高于此值 -> 对齐可信度低
+  max_align_cost: 2.0      # 重复周期按相位对应（不做段内扭曲）的平均差异；一致偏大多为真实动作差异，>2 视为对应不可靠
   max_coarse_align_cost: 1.6   # 区间选择用的粗对齐（2 fps、轻量模型）阈值，粗对齐代价天然偏高
 
 alignment:
   coarse_window_s: 1.0     # 粗对齐（镜像不变特征）的平滑窗口
+  period_band: [0.6, 1.6]  # 一次重复的长度 / 练习者本段的重复周期；null 关闭（engine/templates.py）
   skip_cost: 2.0           # 用户视频首尾“无关片段”的单帧代价（容差单位）；过低会丢弃重复次数不同的整段
+  ref_skip_cost: 1.0       # 标准视频首尾可不匹配的单帧代价：练习者只录了套路的一部分时，未录到的各式标为缺失，
+                           # 而不是被压缩进视频开头几秒；明显低于“错配”代价（约 1.5 以上），高于“匹配”代价（约 0.4–1.0）

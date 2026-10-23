@@ -89,7 +89,8 @@ def body_scale(seq: PoseSequence) -> float:
     if ok.sum() < 5:
         ok = np.isfinite(length)
     if ok.sum() == 0:
-        raise ValueError("Cannot estimate body scale: torso never visible")
+        from .errors import NoPersonError
+        raise NoPersonError("分析区间内始终看不到完整躯干（双肩与双髋），无法测量。请确认练习者全身入画后重新上传。")
     return float(np.median(length[ok]))
 
 

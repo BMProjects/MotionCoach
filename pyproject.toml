@@ -1,6 +1,6 @@
 [project]
 name = "motioncoach"
-version = "0.3.0"
+version = "0.5.0"
 description = "Reference-vs-practitioner motion comparison: per-joint evidence, two-stage alignment and a timeline workbench (Baduanjin first; legacy dance demo included)"
 readme = "README.md"
 license = { text = "MIT" }

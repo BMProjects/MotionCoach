@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "motioncoach.poses/1",
+  "title": "PoseSequence (exchange form)",
+  "description": "Poses of one video on its own timeline. Coordinates are pixels of the displayed (rotation-applied) analysis frame; timestamps are seconds. Missing joints: x = y = -1 (or null) and conf 0.",
+  "type": "object",
+  "required": ["schema", "t", "xy", "conf", "joints", "frame_size", "skeleton", "model"],
+  "properties": {
+    "schema": {"const": "motioncoach.poses/1"},
+    "skeleton": {"enum": ["mediapipe33", "coco17", "coco_wholebody133"]},
+    "joints": {"type": "array", "items": {"type": "string"}},
+    "frame_size": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2, "description": "[width, height] of the analysis frame"},
+    "t": {"type": "array", "items": {"type": "number"}, "description": "strictly increasing, seconds"},
+    "xy": {"type": "array", "items": {"type": "array", "items": {"type": ["number", "null"]}}, "description": "per frame: x0, y0, x1, y1, ... in joint order"},
+    "conf": {"type": "array", "items": {"type": "array", "items": {"type": "number"}}, "description": "per frame, per joint, 0..1"},
+    "conf_thr": {"type": "number", "description": "model-specific threshold below which a joint counts as missing"},
+    "mirrored": {"type": "boolean", "default": false},
+    "model": {"type": "object", "required": ["id", "device"], "properties": {
+      "id": {"type": "string", "description": "e.g. mediapipe-tasks/pose_landmarker_full@4eaa5eb7/gpu"},
+      "device": {"type": "string"}, "runtime": {"enum": ["server", "mobile-web", "android", "ios"]}}},
+    "sampling": {"type": "object", "properties": {"fps": {"type": "number"}, "grid": {"const": "grid-k/fps"}}}
+  }
+}

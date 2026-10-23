@@ -73,18 +73,20 @@ def evaluate_segments(ref_c: PoseSequence, user_c: PoseSequence, segments: list[
     acfg = profile.raw.get("alignment", {})
     res = two_stage_align(FR, FU, rc.t, names, scales, [(s.start, s.end) for s in segments], swap_mode=swap_mode,
                           coarse_window_s=float(acfg.get("coarse_window_s", 1.0)) * 2,
-                          skip_cost=float(acfg.get("skip_cost", 2.0)))
+                          skip_cost=float(acfg.get("skip_cost", 2.0)), ref_skip_cost=acfg.get("ref_skip_cost"))
     q = profile.quality
     torso = _upright_torso(ref_c)
     torso_med = float(np.nanmedian(torso))
     ref_cuts = ref_cuts or []
+    # tempo over the recorded part only (a partial recording leaves reference sections unmatched)
     u_span = uc.t[res.alignment.user_idx[-1]] - uc.t[res.alignment.user_idx[0]]
-    tempo = u_span / (rc.t[-1] - rc.t[0])
+    tempo = u_span / max(1e-6, rc.t[res.alignment.ref_idx[-1]] - rc.t[res.alignment.ref_idx[0]])
     feet = ("left_heel", "right_heel", "left_foot_index", "right_foot_index")
     out = []
     for seg, ev in zip(segments, res.segment_lr):
         mr = (rc.t >= seg.start) & (rc.t < seg.end)
-        u0, u1 = float(uc.t[ev["user"][0]]), float(uc.t[min(ev["user"][1], len(uc.t)) - 1])
+        last = len(uc.t) - 1                         # a section missing at the end has its start at the very end
+        u0, u1 = float(uc.t[min(ev["user"][0], last)]), float(uc.t[max(0, min(ev["user"][1], len(uc.t)) - 1)])
         mu = (uc.t >= u0) & (uc.t <= u1)
         tr = torso[mr]
         tr = tr[np.isfinite(tr)]
@@ -95,6 +97,7 @@ def evaluate_segments(ref_c: PoseSequence, user_c: PoseSequence, segments: list[
         det_u = float(user_c.detected[mu].mean()) if mu.any() else 0.0
         feet_r, feet_u = _visible(ref_c, mr, feet), _visible(user_c, mu, feet)
         cost = min(ev["cost"], ev["cost_swap"])
+        reasons_missing = ["练习者视频在此段之前已结束"] if ev.get("missing") else []
         ratio = ((u1 - u0) / (seg.end - seg.start)) / tempo if tempo > 0 else np.nan
         reasons = []
         if det_r < q.get("min_detection_rate", 0.9) or det_u < q.get("min_detection_rate", 0.9):
@@ -103,12 +106,13 @@ def evaluate_segments(ref_c: PoseSequence, user_c: PoseSequence, segments: list[
             reasons.append(f"脚部可见不足（标准 {feet_r:.0%} / 用户 {feet_u:.0%}）" if feet_r is not None and feet_u is not None else "脚部可见不足")
         if jumps > 0 or zoom_range > 1.3 or (np.isfinite(zoom) and abs(np.log(zoom)) > np.log(1.25)):
             reasons.append(f"标准视频有剪辑或推拉镜头（人物尺度 {zoom:.2f}×，段内变化 {zoom_range:.2f}×，切换 {jumps} 次）")
-        if cost > q.get("max_coarse_align_cost", 1.6):
+        reasons += reasons_missing
+        if not reasons_missing and cost > q.get("max_coarse_align_cost", 1.6):
             reasons.append(f"动作对应可信度低（代价 {cost:.2f}）")
         if not (0.4 <= ratio <= 2.5):
             reasons.append(f"用时与整体节奏不符（{ratio:.2f}×）")
         out.append({"segment": seg.id, "name": seg.name, "ref_range": [seg.start, seg.end], "user_range": [u0, u1],
-                    "eligible": not reasons, "reasons": reasons, "align_cost": cost, "zoom": zoom, "zoom_range": zoom_range,
+                    "eligible": not reasons, "reasons": reasons, "align_cost": cost if np.isfinite(cost) else None, "zoom": zoom, "zoom_range": zoom_range,
                     "detection": [det_r, det_u], "feet_visible": [feet_r, feet_u], "duration_vs_tempo": ratio})
     return out, float(tempo)
 
@@ -132,5 +136,5 @@ def choose(segments: list[Segment], candidates: list[dict], req: ScopeRequest) -
     if runs:
         best = max(runs, key=lambda r: sum(segments[i].end - segments[i].start for i in r))
         return best, "自动选择：两段视频共同、连续且质量合格的最长区间"
-    best = int(np.argmin([c["align_cost"] for c in candidates]))
+    best = int(np.argmin([np.inf if c["align_cost"] is None else c["align_cost"] for c in candidates]))   # None: not recorded
     return [best], "NEEDS_REVIEW：没有合格的动作段；仅为查看而选择了对应可信度最高的一段，结论需人工核查"

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "motioncoach.coach.advice/0",
+  "title": "Coaching advice (LLM output, validated before display)",
+  "description": "Interface only (docs/LLM_COACH_DESIGN.md). Validator rules: every number must appear in the evidence (unit conversion allowed); every priority cites existing evidence refs; no direction for items in cannot_judge; no medical claims.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "summary", "priorities", "cannot_judge", "safety_notes"],
+  "properties": {
+    "schema": {"const": "motioncoach.coach.advice/0"},
+    "summary": {"type": "string", "maxLength": 200},
+    "priorities": {"type": "array", "maxItems": 3, "items": {"type": "object", "additionalProperties": false,
+      "required": ["segment", "feature", "evidence_refs", "what", "why", "how", "confidence"],
+      "properties": {
+        "segment": {"type": "string"}, "feature": {"type": "string"},
+        "evidence_refs": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "what": {"type": "string"}, "why": {"type": "string"}, "how": {"type": "string"},
+        "knowledge_refs": {"type": "array", "items": {"type": "string"}},
+        "confidence": {"enum": ["high", "medium", "low"]}}}},
+    "strengths": {"type": "array", "items": {"type": "string"}},
+    "cannot_judge": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["ref", "advice"],
+      "properties": {"ref": {"type": "string"}, "advice": {"type": "string", "description": "e.g. how to re-film"}}}},
+    "safety_notes": {"type": "array", "items": {"type": "string"}},
+    "provenance": {"type": "object", "properties": {"model": {"type": "string"}, "prompt_version": {"type": "string"},
+      "evidence_schema": {"type": "string"}, "validated": {"type": "boolean"}}}
+  }
+}
